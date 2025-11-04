@@ -1,0 +1,1848 @@
+-- Event dependentscheduler_event
+
+CREATE DEFINER=`root`@`%` EVENT `dependentscheduler_event` ON SCHEDULE EVERY 1 MINUTE STARTS '2025-01-07 13:15:00' ON COMPLETION NOT PRESERVE ENABLE DO BEGIN
+    
+    declare v_scheduler_gid int;
+    declare v_pipeline_code varchar(32);
+    declare v_dataset_code varchar(32);
+    
+    select scheduler_gid,pipeline_code, dataset_code
+    into   v_scheduler_gid,v_pipeline_code, v_dataset_code
+    from con_trn_tscheduler
+    where scheduler_status = 'Completed'
+    -- and 1 = 2
+    order by 1 desc limit 1;
+    
+    update con_trn_tscheduler set scheduler_status = 'Ratified'
+    where scheduler_gid = v_scheduler_gid
+    and pipeline_code = v_pipeline_code
+    and dataset_code = v_dataset_code;
+    
+    call pr_con_dependentscheduler(v_pipeline_code, v_dataset_code,v_scheduler_gid);
+END
+
+-- pr_con_dependentscheduler
+
+
+DROP procedure IF EXISTS `pr_con_dependentscheduler`;
+
+DELIMITER $$
+
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_dependentscheduler`(
+in in_pipeline_code varchar(32),
+in in_dataset_code varchar(32),
+in in_scheduler_gid int(11))
+me:BEGIN
+
+-- Variable Declarations
+	DECLARE v_fltcondition_text TEXT;
+    DECLARE v_rejcondition_text TEXT;
+	DECLARE v_table_view_query_desc TEXT;
+    DECLARE v_done INT DEFAULT 0;
+    DECLARE v_pipeline_code VARCHAR(32);
+    DECLARE v_dataset_code VARCHAR(32);
+    DECLARE v_scheduler_gid INT(11);
+    DECLARE extracted_text VARCHAR(255);
+    DECLARE v_sql text;
+    DECLARE v_bcpcol text;
+    DECLARE v_trgcol text;
+
+    -- Cursor Declaration
+    DECLARE cur CURSOR FOR
+        SELECT pipeline_code,dataset_code
+        FROM con_trn_tpplfinalization
+        WHERE (parent_dataset_code = in_dataset_code
+               OR parent_dataset_code = CONCAT(in_dataset_code, '_view'))
+          AND delete_flag = 'N'
+          AND run_type = 'Dependent';
+
+    -- Declare NOT FOUND handler
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = 1;
+
+    -- Open the cursor
+    OPEN cur;
+
+    -- Cursor loop
+    cursor_loop: LOOP
+        FETCH cur INTO v_pipeline_code,v_dataset_code;
+		
+        select concat(db_name,'.',table_view_query_desc) into v_table_view_query_desc 
+        from con_mst_tpipeline as a 
+		where pipeline_code = v_pipeline_code 
+        and pipeline_status = 'Active' and delete_flag = 'N';
+        
+        -- select v_table_view_query_desc,v_pipeline_code,v_dataset_code;
+        
+        IF v_done THEN
+            LEAVE cursor_loop;
+        END IF;
+        
+        -- Insert logic for processing inside the cursor loop
+        INSERT INTO con_trn_tscheduler 
+        (scheduled_date, pipeline_code,dataset_code, scheduler_start_date, scheduler_status, scheduler_initiated_by, delete_flag)
+        SELECT NOW(), v_pipeline_code,v_dataset_code, NOW(), 'Scheduled', 'System', 'N'
+        FROM con_trn_tscheduler 
+        WHERE scheduler_gid = in_scheduler_gid
+		-- AND scheduler_status = 'Completed' 
+        AND delete_flag = 'N' ;
+        
+        SELECT MAX(scheduler_gid) INTO v_scheduler_gid 
+        FROM con_trn_tscheduler;
+        
+        -- implemented on 28-07-2025 start (By Mohan)
+        update con_trn_tscheduler set scheduler_status = 'Locked'
+        where scheduler_gid = v_scheduler_gid
+        and delete_flag = 'N' ;
+        -- implemented on 28-07-2025 end (By Mohan)
+        
+        -- Get inclusion condition
+        if exists(SELECT * FROM con_trn_tpplcondition
+			WHERE pipeline_code = v_pipeline_code
+            and dataset_code  = v_dataset_code
+			AND condition_type = 'Filter'
+			AND delete_flag = 'N') then
+			SELECT 
+				case when condition_text != '' then 
+					concat(' AND ' , ifnull(condition_text,'1 = 1')) 
+                else '' end INTO v_fltcondition_text
+			FROM con_trn_tpplcondition
+			WHERE pipeline_code = v_pipeline_code
+            and dataset_code  = v_dataset_code
+			AND condition_type = 'Filter'
+			AND delete_flag = 'N';
+        
+			set v_fltcondition_text = ifnull(v_fltcondition_text,'');
+        else
+			set v_fltcondition_text = '';
+        end if;
+        
+         SET v_fltcondition_text = REPLACE(v_fltcondition_text, '[', '`');
+		 SET v_fltcondition_text = REPLACE(v_fltcondition_text, ']', '`');
+		 set v_fltcondition_text = ifnull(v_fltcondition_text,'');
+         
+         #Rejection Condition Framing part
+       
+        -- Get rejection condition
+        if exists(SELECT * FROM con_trn_tpplcondition
+			WHERE pipeline_code = v_pipeline_code
+            and dataset_code  = v_dataset_code
+			AND condition_type = 'Rejection'
+			AND delete_flag = 'N') then
+			SELECT 
+				case when condition_text != '' then 
+					concat(' AND ' , ifnull(condition_text,'1 = 1')) 
+                else '' end INTO v_rejcondition_text
+			FROM con_trn_tpplcondition
+			WHERE pipeline_code = v_pipeline_code
+            and dataset_code  = v_dataset_code
+			AND condition_type = 'Rejection'
+			AND delete_flag = 'N';
+        
+			set v_rejcondition_text = ifnull(v_rejcondition_text,'');
+        else
+			set v_rejcondition_text = '';
+        end if;
+         
+        SET v_rejcondition_text = REPLACE(v_rejcondition_text, '[', '`');
+		SET v_rejcondition_text = REPLACE(v_rejcondition_text, ']', '`');
+		set v_rejcondition_text = ifnull(v_rejcondition_text,''); 
+        
+        select 
+			group_concat(a.dataset_table_field) ,
+			group_concat(concat("`",a.sourcefield_name,"`")) into v_bcpcol,v_trgcol
+		from con_trn_tpplfieldmapping as b
+		left join con_trn_tpplsourcefield as a on a.pipeline_code = b.pipeline_code 
+		and a.sourcefield_name = b.ppl_field_name
+		and a.delete_flag = 'N'
+		where b.pipeline_code =  v_pipeline_code
+        and  b.dataset_code  = v_dataset_code
+		and (b.pipeline_code = a.pipeline_code or b.pplfieldmapping_flag = 1) 
+		and b.delete_flag = 'N' order by pplsourcefield_gid;
+        
+        -- select v_bcpcol,v_scheduler_gid,in_scheduler_gid;
+        
+        set v_sql = '';
+	    /*set v_sql = concat('insert into con_trn_tbcp (scheduler_gid,',v_bcpcol,')');
+	    set v_sql = concat(v_sql,' select ',v_scheduler_gid,',', v_bcpcol ,' from con_trn_tbcp ');
+		set v_sql = concat(v_sql,' where status_flag = "V" and scheduler_gid = ',in_scheduler_gid ,v_fltcondition_text,v_rejcondition_text);*/
+		
+        set v_sql = concat('insert into con_trn_tbcp (scheduler_gid,',v_bcpcol,')');
+	    set v_sql = concat(v_sql,' select ',v_scheduler_gid,',', v_trgcol ,' from ', v_table_view_query_desc);
+		set v_sql = concat(v_sql,' where 1=1 ',v_fltcondition_text,v_rejcondition_text);
+        
+      -- select v_sql;  
+	  set @v_sql = v_sql;
+	  select cast(@v_sql as nchar);
+      -- select v_bcpcol;
+	  prepare stmt from @v_sql;
+	  execute stmt;
+	  deallocate prepare stmt;
+      
+      call pr_con_set_dataprocessing(v_pipeline_code,v_scheduler_gid,v_dataset_code);
+      
+    END LOOP cursor_loop;
+  
+    -- Close cursor
+    CLOSE cur;
+END$$
+
+DELIMITER ;
+;
+
+
+-- pr_con_report_ppldatasetdetails
+
+DROP procedure IF EXISTS `pr_con_report_ppldatasetdetails`;
+
+DELIMITER $$
+
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_report_ppldatasetdetails`(
+	in in_pipeline_code varchar(32),
+    in in_dataset_code varchar(32)
+)
+
+BEGIN
+	DECLARE v_dataset_exists INT DEFAULT 0;
+    SELECT COUNT(1) INTO v_dataset_exists
+    FROM recon_mst_tdataset
+    WHERE dataset_code = in_dataset_code AND delete_flag = 'Y';
+    
+    IF v_dataset_exists > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Error: Inactive dataset code provided.', MYSQL_ERRNO = 1001;
+    END IF;
+    
+    -- Pipeline header
+    
+    select
+		pipeline_code as 'Pipeline Code',
+		pipeline_name as 'Pipeline Name',
+        b.connection_name as 'Connector',
+		source_file_name as 'File Name',
+		sheet_name as 'Sheet Name',
+		pipeline_status as 'Status'
+	from con_mst_tpipeline a
+    inner join con_mst_tconnection b on b.connection_code = a.connection_code and b.delete_flag='N'
+	where pipeline_code = in_pipeline_code and a.delete_flag = 'N';
+    
+     -- Dataset list
+    select 
+    '10f' as 'Dataset Code',
+    '10f' as 'Dataset Name',
+	'10f' as 'Dataset Category',
+    '10f' as 'Pipeline Dataset Type',
+    '10f' as 'Mapping Status'
+    union all
+    select a.dataset_code as 'Dataset Code', a.dataset_name as 'Dataset Name',
+    a.dataset_category as 'Dataset Category',b.pipelinedet_dataset_type  as 'Pipeline Dataset Type',
+    b.pipelinedet_status  as 'Mapping Status'
+    from recon_mst_tdataset a
+	inner join con_trn_tpipelinedetails b on b.target_dataset_code = in_dataset_code and b.delete_flag='N'
+	where b.pipeline_code = in_pipeline_code
+    and a.dataset_code = in_dataset_code
+    and a.delete_flag = 'N';
+    
+    -- Dataset Field details
+    select 
+		0 as 'Seq No',
+		'10f' as 'Dataset Field Name',
+		'10f' as 'Source Field Name',
+		'8f' as 'Field Type',
+		'8f' as 'Field Length',
+		'10f' as 'Field Manadatory'
+    union all
+    select c.* from (SELECT 
+    dsf.dataset_seqno as 'Seq No',
+    TRIM(dsf.field_name) as 'Dataset Field Name',
+    case 
+		when (dsf.system_flag = "P" && p.ppl_field_name != "-- Select --")then ifnull(p.ppl_field_name,dsf.field_name)
+		when (dsf.system_flag = "P" && p.ppl_field_name = "-- Select --")then p.mapped_field_name
+		when ifnull(p.ppl_field_name, '-- Select --') = "-- Select --" then fn_get_matched_field_name(in_pipeline_code,in_dataset_code,dsf.field_name) 
+		when p.ppl_field_name = "-- Select --" then p.mapped_field_name
+    else p.ppl_field_name
+    end as 'Source Field Name',
+    upper(dsf.field_type) as 'Field Type',
+    case 
+		when dsf.field_type = 'DATE' then ifnull(ps.sourcefield_format,'--Select--') 
+		when dsf.field_type = 'NUMERIC' then concat(ifnull(dsf.precision_length,0),',',ifnull(dsf.scale_length,0)) 
+        else dsf.field_length 
+	end as 'Field Length',
+    case 
+		when dsf.field_mandatory = 'Y' then 'YES'
+		when dsf.field_mandatory = 'N' then 'NO'
+    end as 'Field Manadatory'    
+    FROM recon_mst_tdataset AS ds
+	LEFT JOIN ( SELECT ds.system_flag,dsf.* FROM recon_mst_tdataset AS ds 
+				INNER JOIN recon_mst_tdatasetfield AS dsf on ds.dataset_code = dsf.dataset_code AND dsf.delete_flag = 'N' 
+                AND dsf.active_status = 'Y'
+                WHERE ds.dataset_code = in_dataset_code
+                ) AS dsf on ds.dataset_code = dsf.dataset_code
+	LEFT JOIN (SELECT p.* FROM con_mst_tpipeline AS p				
+				WHERE 1=1 AND p.delete_flag = 'N' 
+                AND p.pipeline_status NOT IN ('Inactive') 
+                ) AS pi ON ds.pipeline_code = pi.pipeline_code
+    LEFT JOIN (SELECT p.pipeline_code
+                ,pf.pplfieldmapping_gid,pf.pplfieldmapping_flag
+                ,pf.ppl_field_name as ppl_field_name,ifnull(pf.mapped_field_name,'-- Select --') as mapped_field_name,pf.dataset_field_name,pf.default_value,pf.dataset_code
+				FROM con_mst_tpipeline AS p
+                INNER JOIN con_trn_tpipelinedetails AS pd on p.pipeline_code = pd.pipeline_code -- AND p.dataset_code = pd.dataset_code
+                AND pd.delete_flag = 'N'
+				INNER JOIN con_trn_tpplfieldmapping AS pf on p.pipeline_code = pf.pipeline_code AND pf.delete_flag = 'N'
+                AND pd.target_dataset_code = pf.dataset_code
+                WHERE pf.dataset_code = in_dataset_code AND pf.pipeline_code = in_pipeline_code AND p.delete_flag = 'N'
+                ) AS p on dsf.dataset_table_field = p.dataset_field_name
+	LEFT JOIN (SELECT p.pipeline_code,ps.dataset_code
+				,ps.pplsourcefield_gid,ps.sourcefield_name,ps.sourcefield_sno,ps.sourcefield_datatype,ps.source_type,ps.sourcefieldmapping_flag
+                ,ps.sourcefield_format
+				FROM con_mst_tpipeline AS p
+                INNER JOIN con_trn_tpipelinedetails AS pd on p.pipeline_code = pd.pipeline_code -- AND p.dataset_code = pd.dataset_code
+                AND pd.delete_flag = 'N'
+                INNER JOIN con_trn_tpplsourcefield AS ps on p.pipeline_code = ps.pipeline_code AND pd.target_dataset_code = ps.dataset_code
+                AND ps.delete_flag = 'N' AND ps.sourcefield_format not in ("",'--Select--','-- Select --')
+                ) AS ps ON p.pipeline_code = ps.pipeline_code AND p.dataset_code = ps.dataset_code AND ps.sourcefield_name = p.ppl_field_name
+	WHERE ds.dataset_code = in_dataset_code AND ds.system_flag in ('P','N','Y') 
+    AND ds.active_status in ('Y','D') ) as c order by `Seq No`;
+    
+    -- Filters 
+     select 
+    '10f' as 'Condition Type',
+	'10f' as 'Condition'
+    union all
+    select 
+    condition_type as 'Condition Type', 
+    condition_text as 'Condition' 
+    from con_trn_tpplcondition 
+    where pipeline_code = in_pipeline_code 
+    and dataset_code = in_dataset_code 
+    and condition_type in ('Rejection','Filter')
+    and delete_flag = 'N';
+-- validation
+
+	select 
+    '5f' as 'Validation Type',
+    '10f' as 'Condition Name',
+	'20f' as 'Condition'
+    union all
+    select 
+    case 
+		when sys_flag = 'Y' then 'System'
+		when sys_flag = 'N' then 'User'
+    end as 'Validation Type', 
+    condition_name as 'Condition Name',
+    condition_text as 'Condition' 
+    from con_trn_tpplcondition 
+    where pipeline_code = in_pipeline_code 
+    and dataset_code = in_dataset_code 
+    and condition_type in ('Validation')
+    and delete_flag = 'N';
+ -- conversion Rule
+  select 
+ '10f' as 'Seq No',
+ '10f' as 'Source Field Name'
+ union all
+  select 
+        dataprocessingheader_seqno as 'Seq No',
+        dataprocessingheader_ppl_field_name as 'Source Field Name'
+    from con_mst_tdataprocessingheader
+    where 
+        delete_flag = 'N'
+        and dataprocessingheader_pipeline_code = in_pipeline_code
+        and dataprocessingheader_dataset_code = in_dataset_code
+        and delete_flag = 'N';
+  -- conversion rule details
+  select 
+  '10f' AS 'Dataprocessing field Name',
+  '10f' AS 'Dataprocessing Master Name',
+  '10f' AS 'Dataprocessing Parent Name',
+  '10f' AS 'Dataprocessing Child Name',
+  '10f' AS 'Order By',
+  '5f' AS 'Parameter 1',
+  '5f' AS 'Parameter 2',
+  '5f' AS 'Parameter 2'
+  union all
+  SELECT 
+    fm.ppl_field_name AS 'Dataprocessing field Name', -- dataprocessing_ppl_field_name,
+	pm.master_name AS 'Dataprocessing Master Name', -- dataprocessing_master_name,
+    ppm.master_name AS 'Dataprocessing Parent Name', -- dataprocessing_parent_master_name,
+    COALESCE(cm.master_name, '-') AS 'Dataprocessing Child Name', -- dataprocessing_child_master_name,
+    dp.dataprocessing_orderby AS 'Order By',
+    dp.dataprocessing_param1 AS 'Parameter 1',
+    dp.dataprocessing_param2 as 'Parameter 2',
+    dp.dataprocessing_param3 as 'Parameter 3'  
+FROM con_mst_tdataprocessing dp
+JOIN con_trn_tpplfieldmapping fm 
+    ON dp.dataprocessing_pplfieldmapping_gid = fm.pplfieldmapping_gid
+JOIN con_mst_tmaster pm 
+    ON dp.dataprocessing_master_gid = pm.master_gid
+JOIN con_mst_tmaster ppm 
+    ON dp.dataprocessing_parent_master_gid = ppm.master_gid
+LEFT JOIN con_mst_tmaster cm 
+    ON dp.dataprocessing_child_master_gid = cm.master_gid
+JOIN con_mst_tdataprocessingheader dph 
+    ON dp.dataprocessing_header_gid = dph.dataprocessingheader_gid
+WHERE 
+    dph.dataprocessingheader_pipeline_code = in_pipeline_code
+    and dph.dataprocessingheader_dataset_code = in_dataset_code
+    AND dp.delete_flag = 'N'
+    AND fm.delete_flag = 'N'
+    AND pm.delete_flag = 'N';
+    
+    -- finalization
+    select
+    '10f' as 'Run Type',
+    '10f' as 'Upload Mode',
+    '10f' as 'Error Mode',
+    '10f' as 'Duplicate Mode',
+    '10f' as 'Key Field'
+    union all
+select 
+	run_type as 'Run Type',
+    upload_mode as 'Upload Mode',
+    error_mode as 'Error Mode',
+    duplicate_mode as 'Duplicate Mode',
+    key_field as 'Key Field'
+from con_trn_tpplfinalization 
+where pipeline_code = in_pipeline_code 
+and dataset_code = in_dataset_code
+and delete_flag = 'N';
+END$$
+
+DELIMITER ;
+;
+
+-- pr_con_report_pipelinedetails
+
+
+DROP procedure IF EXISTS `pr_con_report_pipelinedetails`;
+
+DELIMITER $$
+
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_report_pipelinedetails`(
+in in_pipeline_code varchar(25)
+)
+BEGIN
+
+select
+		pipeline_code as 'Pipeline Code',
+		pipeline_name as 'Pipeline Name',
+        b.connection_name as 'Connector',
+		source_file_name as 'File Name',
+		sheet_name as 'Sheet Name',
+		pipeline_status as 'Status'
+	from con_mst_tpipeline a
+    inner join con_mst_tconnection b on b.connection_code = a.connection_code and b.delete_flag='N'
+	where pipeline_code = in_pipeline_code and a.delete_flag = 'N';
+    
+    
+    -- Dataset list
+    select 
+    '10f' as 'Dataset Code',
+    '10f' as 'Dataset Name',
+	'10f' as 'Dataset Category',
+    '10f' as 'Pipeline Dataset Type',
+    '10f' as 'Mapping Status'
+    union all
+    select a.dataset_code as 'Dataset Code', a.dataset_name as 'Dataset Name',
+    a.dataset_category as 'Dataset Category',b.pipelinedet_dataset_type  as 'Pipeline Dataset Type',
+    b.pipelinedet_status  as 'Mapping Status'
+    from recon_mst_tdataset a
+	inner join con_trn_tpipelinedetails b on b.target_dataset_code = a.dataset_code and b.delete_flag='N'
+	where b.pipeline_code = in_pipeline_code
+    and a.delete_flag = 'N';
+
+END$$
+
+DELIMITER ;
+;
+
+-- pr_con_pipeline_dataset_clone
+
+DROP procedure IF EXISTS `pr_con_pipeline_dataset_clone`;
+
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_pipeline_dataset_clone`(
+in in_pipeline_code varchar (32),
+in in_clone_dataset_code varchar (64),
+in in_new_dataset_name varchar(255),
+in in_user_code varchar(32),
+out out_msg text,
+out out_result int(10)
+)
+me:BEGIN
+
+
+declare err_msg text default '';
+declare err_flag varchar(10) default false;
+declare v_dataset_code varchar(32);
+declare v_dataset_db_name text default '';
+declare v_dataset_table_name text default '';
+declare v_role_code text default '';
+declare v_lang_code text default '';
+
+DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    GET DIAGNOSTICS CONDITION 1 @sqlstate = RETURNED_SQLSTATE,
+    @errno = MYSQL_ERRNO, @text = MESSAGE_TEXT;
+    SET @full_error = CONCAT("ERROR ", @errno, " (", @sqlstate, "): ", @text);
+
+    ROLLBACK;
+    set out_result = 0;
+    set out_msg = @full_error;
+  END;
+
+if trim(in_new_dataset_name) = "" then
+    set err_msg := concat(err_msg,'Dataset name cannot be empty,');
+    set err_flag := true;
+end if;
+
+if exists  (select '*' from recon_mst_tdataset
+			where trim(dataset_name) = trim(in_new_dataset_name)
+			and delete_flag = 'N') then
+    set err_msg := concat(err_msg,'Given dataset name is already taken,');
+    set err_flag := true;
+end if;
+
+if exists (select '*' from con_trn_tpipelinedetails
+			where pipelinedet_status != 'Active'
+            and pipeline_code = in_pipeline_code
+            and target_dataset_code = in_clone_dataset_code
+			and delete_flag = 'N') then
+    set err_msg := concat(err_msg,'Given Pipeline dataset is not in active status,');
+    set err_flag := true;
+end if;
+
+if trim(in_pipeline_code) = "" then
+    set err_msg := concat(err_msg,'Pipeline code cannot be empty,');
+    set err_flag := true;
+end if;
+
+if trim(in_clone_dataset_code) = "" then
+    set err_msg := concat(err_msg,'Dataset code cannot be empty,');
+    set err_flag := true;
+end if;
+
+if err_flag = false then
+        set v_dataset_code = fn_get_autocode('DS');
+		set v_dataset_db_name = fn_get_configvalue('dataset_db_name');
+		set v_dataset_db_name = ifnull(v_dataset_db_name,'');
+		if v_dataset_db_name <> '' then
+			set v_dataset_table_name = concat(v_dataset_db_name,'.',v_dataset_code);
+		else
+			set v_dataset_table_name = v_dataset_code;
+		end if;
+	insert into recon_mst_tdataset
+		(
+		dataset_code,dataset_name, dataset_category, dataset_table_name,
+		pipeline_code, system_flag, active_status, insert_date, insert_by, delete_flag)
+	SELECT 
+		v_dataset_code, in_new_dataset_name, dataset_category, v_dataset_table_name,
+		in_pipeline_code,'P', 'Y',now(),in_user_code, 'N'
+	FROM recon_mst_tdataset 
+	where dataset_code = in_clone_dataset_code 
+	and active_status = 'Y' and delete_flag = 'N';
+    
+    insert into con_trn_tpipelinedetails
+    ( 
+    pipeline_code, target_dataset_code, scheduler_path, pipelinedet_dataset_type, db_name,
+    table_view_query_desc,table_view_query_type,pipelinedet_status,created_date,created_by, delete_flag)
+    select
+     in_pipeline_code, v_dataset_code, scheduler_path, pipelinedet_dataset_type, db_name,
+     table_view_query_desc,table_view_query_type,'Draft',now(),in_user_code,'N'
+     from con_trn_tpipelinedetails
+     where target_dataset_code = in_clone_dataset_code
+     and delete_flag = 'N';
+
+	insert into recon_mst_tdatasetfield
+    (
+    dataset_code, dataset_seqno,field_name,field_type,field_length,precision_length,scale_length,
+    field_mandatory,dataset_field_sno,dataset_table_field,active_status,insert_date,insert_by,delete_flag
+    )
+    select 
+    v_dataset_code,dataset_seqno,field_name,field_type,field_length,precision_length,scale_length,
+    field_mandatory,dataset_field_sno,dataset_table_field,'Y',now(),in_user_code, 'N'
+    from recon_mst_tdatasetfield
+    where dataset_code = in_clone_dataset_code
+	and active_status = 'Y' and delete_flag = 'N';
+    
+    call pr_recon_mst_tdatasetcontext (v_dataset_code,in_user_code,v_role_code,v_lang_code);    
+    call pr_create_datasettable(v_dataset_db_name,v_dataset_code,@msg,@result);
+
+-- pplsourcefield
+
+	 insert into con_trn_tpplsourcefield (
+		 pipeline_code,dataset_code, sourcefield_name,sourcefield_sno, sourcefield_datatype,sourcefield_format,
+		 sourcefield_expression, source_type,dataset_table_field,dataset_table_field_sno,cast_dataset_table_field,
+		 expressionfield_json, sourcefieldmapping_flag,created_date, created_by,delete_flag)
+	select in_pipeline_code, v_dataset_code,sourcefield_name,sourcefield_sno,sourcefield_datatype,sourcefield_format,
+		sourcefield_expression, source_type,dataset_table_field,dataset_table_field_sno,cast_dataset_table_field,
+		expressionfield_json, sourcefieldmapping_flag,now(),in_user_code,'N'
+		from  con_trn_tpplsourcefield
+		where pipeline_code = in_pipeline_code
+		and dataset_code = in_clone_dataset_code
+		and   delete_flag = 'N';
+    
+    -- pplcondition
+
+	insert into con_trn_tpplcondition (pipeline_code,dataset_code,condition_type,condition_name,
+				condition_text,condition_msg,sys_flag,created_date,created_by,delete_flag)
+    select in_pipeline_code,v_dataset_code,condition_type,condition_name,
+			condition_text, condition_msg,sys_flag,now(),'Admin','N'
+    from  con_trn_tpplcondition
+    where pipeline_code = in_pipeline_code
+    and dataset_code = in_clone_dataset_code
+    and delete_flag = 'N';
+-- fieldmapping
+
+    insert into con_trn_tpplfieldmapping (
+    pipeline_code,dataset_code,pplfieldmapping_flag,ppl_field_name,mapped_field_name,dataset_field_name,
+    default_value,created_date,created_by,delete_flag)
+    select pipeline_code,v_dataset_code,pplfieldmapping_flag,ppl_field_name,mapped_field_name,dataset_field_name,
+    default_value,now(),in_user_code,'N'
+    from con_trn_tpplfieldmapping
+    where pipeline_code = in_pipeline_code
+    and dataset_code = in_clone_dataset_code
+    and delete_flag = 'N';  
+    
+-- dataprocessingheader
+
+	insert into con_mst_tdataprocessingheader(dataprocessingheader_pplfieldmapping_gid,dataprocessingheader_pipeline_code,
+			dataprocessingheader_dataset_code, dataprocessingheader_seqno,dataprocessingheader_ppl_field_name,created_date,created_by,delete_flag)
+     select fn_get_pplfieldmapping_gid(in_pipeline_code,v_dataset_code,dataprocessingheader_ppl_field_name)			
+			,in_pipeline_code,v_dataset_code,dataprocessingheader_seqno, dataprocessingheader_ppl_field_name,now(),in_user_code,delete_flag
+	from con_mst_tdataprocessingheader 
+    where dataprocessingheader_pipeline_code = in_pipeline_code
+    and dataprocessingheader_dataset_code = in_clone_dataset_code
+    and delete_flag = 'N';
+    
+-- dataprocessingdetail
+
+	insert into con_mst_tdataprocessing(
+		     dataprocessing_header_gid,dataprocessing_child_master_gid,dataprocessing_parent_master_gid,
+			 dataprocessing_master_gid,dataprocessing_pipeline_gid,dataprocessing_pplfieldmapping_gid,dataprocessing_orderby,
+			 dataprocessing_param1,dataprocessing_param2,dataprocessing_param3,created_date,created_by,delete_flag)
+	select fn_get_dataprocessingheader_gid(in_pipeline_code,v_dataset_code,a.dataprocessingheader_ppl_field_name,a.dataprocessingheader_seqno),
+             b.dataprocessing_child_master_gid,b.dataprocessing_parent_master_gid,
+			 b.dataprocessing_master_gid,c.pipeline_gid,b.dataprocessing_pplfieldmapping_gid,b.dataprocessing_orderby,
+			 b.dataprocessing_param1,b.dataprocessing_param2,b.dataprocessing_param3,now(),in_user_code,b.delete_flag
+	from con_mst_tdataprocessingheader as a
+	inner join con_mst_tdataprocessing as b on a.dataprocessingheader_gid = b.dataprocessing_header_gid
+	and b.delete_flag = 'N'
+    inner join con_mst_tpipeline as c on c.pipeline_code = in_pipeline_code
+	and c.delete_flag = 'N'
+	where a.dataprocessingheader_pipeline_code = in_pipeline_code
+    and a.dataprocessingheader_dataset_code = in_clone_dataset_code
+	and a.delete_flag = 'N';
+    
+-- pplfinalization
+
+insert into con_trn_tpplfinalization (pipeline_code,dataset_code,run_type,cron_expression,extract_mode,
+				upload_mode,key_field,extract_condition,pull_days,reject_duplicate_flag,error_mode,
+                duplicate_mode,last_incremental_val,parent_dataset_code,created_date,created_by,delete_flag)
+    select in_pipeline_code,v_dataset_code,run_type,cron_expression,extract_mode,upload_mode,
+			key_field,extract_condition,pull_days,reject_duplicate_flag,error_mode,
+            duplicate_mode,last_incremental_val,parent_dataset_code,now(),in_user_code,delete_flag
+			from con_trn_tpplfinalization 
+			where pipeline_code = in_pipeline_code
+			and dataset_code = in_clone_dataset_code
+			and delete_flag = 'N';           
+  set out_result = 1;
+  set out_msg = "Cloning Completed";
+else
+  set out_result = 0;
+  set out_msg = err_msg;
+  leave me;
+end if;
+END$$
+
+DELIMITER ;
+;
+
+-- pr_validate_sql_syntax
+
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_validate_sql_syntax`(
+    IN in_recon_code VARCHAR(32),
+    IN in_query LONGTEXT,
+    IN in_report_code VARCHAR(32),
+    OUT out_result BOOLEAN,
+    OUT out_msg TEXT
+)
+BEGIN
+    DECLARE v_table_name TEXT DEFAULT '';
+    DECLARE v_report_name TEXT DEFAULT '';
+	DECLARE v_table_joins TEXT DEFAULT '';
+    DECLARE v_dataset_db_name TEXT DEFAULT '';
+    DECLARE v_report_exec_type TEXT DEFAULT '';
+    DECLARE i INT DEFAULT 0;
+    DECLARE ch CHAR(1);
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        SET out_result = FALSE;
+        SET out_msg = 'Syntax error .!';
+        -- SET out_msg = CONCAT('Syntax error in SQL: ', @sql);
+    END;
+
+    -- Remove aliases a. to z. from in_query
+/*   WHILE i < 26 DO
+    SET ch = CHAR(ASCII('a') + i);
+    SET in_query = REPLACE(in_query, CONCAT(' ', ch, '.'), ' ');
+    SET in_query = REPLACE(in_query, CONCAT('(', ch, '.'), '(');
+    SET i = i + 1;
+END WHILE; */
+
+    -- Get the actual table name
+    SELECT table_name, rpt_table_name, report_exec_type, table_joins
+    INTO v_table_name, v_report_name, v_report_exec_type, v_table_joins
+    FROM recon_mst_treport
+    WHERE report_code = in_report_code
+	AND delete_flag = 'N';
+
+if v_report_exec_type = 'D' then  
+	set v_dataset_db_name = fn_get_configvalue('dataset_db_name');   
+	if v_dataset_db_name <> '' then
+		  set v_table_name = concat(v_dataset_db_name,'.',in_report_code);
+		else
+		  set v_table_name = in_report_code;
+	end if;
+end if;
+if v_report_exec_type != 'D' and (v_table_joins IS NULL OR v_table_joins = '') then
+    set @sql = concat("SELECT * FROM ", v_table_name, " where 1=1 " , in_query);
+elseif v_report_exec_type = 'D' and (v_table_joins IS NULL OR v_table_joins = '') then
+    set @sql = concat("SELECT * FROM ", v_table_name, " where 1=1 " , in_query);
+else
+    SET @sql = CONCAT("SELECT * FROM ", v_table_joins, " ", in_query);
+end if;
+	-- select @sql;
+    -- Prepare and validate
+    PREPARE validate_stmt FROM @sql;
+
+    IF out_result IS NULL THEN
+        SET out_result = TRUE;
+        SET out_msg = "Query Validated Successfully .!";
+    END IF;
+    DEALLOCATE PREPARE validate_stmt;
+END
+
+/* INSERT INTO `recon_flexi_pocdev_170225`.`con_mst_tqcdmaster` (`master_gid`, `master_syscode`, `master_code`, `master_short_code`, `master_name`, `master_multiple_name`, `parent_master_syscode`, `depend_flag`, `system_flag`, `active_status`, `delete_flag`) VALUES ('', 'sysdate', 'sysdate', 'sysdate', 'Default Date', 'Default Date', 'QCD_DATE_FORMAT', 'N', 'N', 'Y', 'N'); */
+
+-- pr_run_tranbrkpreport:
+
+ update recon_mst_treport
+set table_joins = "recon_trn_ttranbrkp as a
+    left join recon_mst_tdataset as b on a.tranbrkp_dataset_code = b.dataset_code
+      and b.delete_flag = 'N'
+    left join recon_trn_ttran as c on a.tran_gid = c.tran_gid and c.delete_flag = 'N'
+    left join recon_trn_ttranko as d on a.tran_gid = d.tran_gid and d.delete_flag = 'N'
+    left join recon_mst_tdataset as f on a.dataset_code = f.dataset_code
+      and f.delete_flag = 'N'
+		where true" where sp_name = 'pr_run_tranbrkpreport';
+		
+-- pr_run_tranreport:
+
+	update recon_mst_treport
+set table_joins = "recon_trn_ttran as a
+    left join recon_mst_tdataset as b on a.dataset_code = b.dataset_code and b.delete_flag = 'N'
+		where a.delete_flag = 'N'" where sp_name = 'pr_run_tranreport';
+		
+		
+-- pr_run_accbalreport:
+
+		update recon_mst_treport
+set table_joins = "recon_trn_taccbal as a
+    left join recon_mst_tdataset as b on a.dataset_code = b.dataset_code and b.delete_flag = 'N'
+		where a.delete_flag = 'N'" where sp_name = 'pr_run_accbalreport';
+
+
+-- pr_run_tranbrkpreport: 
+
+update recon_mst_treport
+set table_joins = "recon_trn_ttranbrkp as a
+    left join recon_mst_tdataset as b on a.tranbrkp_dataset_code = b.dataset_code
+      and b.delete_flag = 'N'
+    left join recon_trn_ttran as c on a.tran_gid = c.tran_gid and c.delete_flag = 'N'
+    left join recon_trn_ttranko as d on a.tran_gid = d.tran_gid and d.delete_flag = 'N'
+    left join recon_mst_tdataset as f on a.dataset_code = f.dataset_code
+      and f.delete_flag = 'N'
+		where true" where sp_name = 'pr_run_tranbrkpreport';
+		
+		
+		
+-- pr_run_tranreport:
+
+update recon_mst_treport
+set table_joins = "recon_trn_ttran as a
+    left join recon_mst_tdataset as b on a.dataset_code = b.dataset_code and b.delete_flag = 'N'
+		where a.delete_flag = 'N'" where sp_name = 'pr_run_tranreport';
+		
+-- pr_run_koreport:
+
+update recon_mst_treport
+set table_joins = "recon_trn_tko as a
+		inner join recon_trn_tkodtl as b on a.ko_gid = b.ko_gid and b.tranbrkp_gid = 0 and b.delete_flag = 'N'
+		inner join recon_trn_ttranko as c on b.tran_gid = c.tran_gid and c.delete_flag = 'N'
+		inner join recon_mst_trecon as d on a.recon_code = d.recon_code and d.delete_flag = 'N'
+		left join recon_mst_trule as e on a.rule_code = e.rule_code and e.delete_flag = 'N'
+    left join recon_mst_tdataset as f on c.dataset_code = f.dataset_code and f.delete_flag = 'N'
+    left join recon_trn_ttranko as g on b.tran_gid = g.tran_gid and 1 = 2
+    left join recon_trn_ttran as h on b.tran_gid = h.tran_gid and 1 = 2
+		where true" where sp_name = 'pr_run_koreport';
+		
+		
+-- pr_run_manualmatchreport:
+
+update recon_mst_treport
+set table_joins = "recon_trn_tmanualtran as a
+    inner join con_trn_tscheduler as b on a.scheduler_gid = b.scheduler_gid and b.delete_flag = 'N'
+    where a.delete_flag = 'N'" where sp_name = 'pr_run_manualmatchreport';
+	
+-- pr_run_koheadreport:
+
+update recon_mst_treport
+set table_joins = "recon_trn_tko as a
+		inner join recon_mst_trecon as d on a.recon_code = d.recon_code and d.delete_flag = 'N'
+		left join recon_mst_trule as e on a.rule_code = e.rule_code and e.delete_flag = 'N'
+		where true" where sp_name = 'pr_run_koheadreport';
+		
+-- pr_run_kotranreport:
+
+update recon_mst_treport
+set table_joins = "recon_trn_tko as a
+		inner join recon_trn_tkodtl as b on a.ko_gid = b.ko_gid and b.delete_flag = 'N'
+		inner join recon_trn_ttranko as c on b.tran_gid = c.tran_gid and c.delete_flag = 'N'
+		left join recon_trn_ttranbrkpko as cc on b.tranbrkp_gid = cc.tranbrkp_gid and cc.delete_flag = 'N'
+		inner join recon_mst_trecon as d on a.recon_code = d.recon_code and d.delete_flag = 'N'
+		left join recon_mst_trule as e on a.rule_code = e.rule_code and e.delete_flag = 'N'
+    left join recon_mst_tdataset as f on c.dataset_code = f.dataset_code and f.delete_flag = 'N'
+		where true" where sp_name = 'pr_run_kotranreport';
+		
+-- pr_run_kobrkpreport:
+update recon_mst_treport
+set table_joins = "recon_trn_tko as a
+		inner join recon_trn_tkodtl as b on a.ko_gid = b.ko_gid and b.tranbrkp_gid = 0 and b.delete_flag = 'N'
+		inner join recon_trn_ttranko as c on b.tran_gid = c.tran_gid and c.mapped_value = 0 and c.delete_flag = 'N'
+		inner join recon_mst_trecon as d on a.recon_code = d.recon_code and d.delete_flag = 'N'
+		left join recon_mst_trule as e on a.rule_code = e.rule_code and e.delete_flag = 'N'
+    left join recon_mst_tdataset as f on c.dataset_code = f.dataset_code and f.delete_flag = 'N'
+		where true" where sp_name = 'pr_run_kobrkpreport';
+		
+-- pr_run_manualpostreport:
+
+update recon_mst_treport
+set table_joins = "recon_tmp_tmanualpost as a
+    inner join recon_tmp_ttranbrkp as b on a.tranbrkp_gid = b.tranbrkp_gid
+		where a.delete_flag = 'N'" where sp_name = 'pr_run_manualpostreport';
+
+-- pr_run_tranthemereport:
+update recon_mst_treport
+set table_joins = "recon_trn_ttran as a
+    left join recon_mst_tdataset as b on a.dataset_code = b.dataset_code and b.delete_flag = 'N'
+		where a.delete_flag = 'N'" where sp_name = 'pr_run_tranthemereport';
+		
+-- pr_run_tranwithbrkpthemereport:
+update recon_mst_treport
+set table_joins = "recon_trn_ttran as a
+    left join recon_mst_tdataset as b on a.dataset_code = b.dataset_code and b.delete_flag = 'N'
+		where a.delete_flag = 'N'" where sp_name = 'pr_run_tranwithbrkpthemereport';
+
+-- pr_run_errorlogreport:
+update recon_mst_treport
+set table_joins = "recon_trn_terrorlog as a
+		where a.delete_flag = 'N'" where sp_name = 'pr_run_errorlogreport';
+		
+-- pr_run_pdkoreport:
+
+update recon_mst_treport
+set table_joins = "recon_trn_tko as a
+
+		inner join recon_trn_tkodtl as b on a.ko_gid = b.ko_gid
+
+		inner join recon_trn_ttranbrkp as c on b.tranbrkp_gid = c.tranbrkp_gid and c.delete_flag = 'N'
+
+		inner join recon_mst_trecon as d on a.recon_code = d.recon_code and d.delete_flag = 'N'
+
+		left join recon_mst_trule as e on a.rule_code = e.rule_code and e.delete_flag = 'N'
+
+    left join recon_mst_tdataset as f on c.tranbrkp_dataset_code = f.dataset_code and f.delete_flag = 'N'
+
+    left join recon_trn_ttranko as g on c.tran_gid = g.tran_gid and g.delete_flag = 'N'
+
+    left join recon_trn_ttran as h on c.tran_gid = h.tran_gid and h.delete_flag = 'N'
+
+		where true" where sp_name = 'pr_run_pdkoreport';
+
+-- pr_run_tranwithbrkpreport:
+
+update recon_mst_treport set table_joins = " recon_trn_ttranbrkp as s left join recon_mst_tdataset as b on s.dataset_code = b.dataset_code
+left join recon_mst_tdataset as c on s.tranbrkp_dataset_code = c.dataset_code
+left join recon_trn_ttran as a on s.tran_gid = a.tran_gid
+left join recon_mst_trecondataset as rd on a.recon_code = rd.recon_code and a.dataset_code = rd.dataset_code
+and rd.active_status = 'Y' and rd.delete_flag = 'N'
+where true " where sp_name = 'pr_run_tranwithbrkpreport'; 
+
+-- pr_run_pdtranwithbrkpexcprpt
+update recon_mst_treport set table_joins = "recon_trn_ttran as a inner join recon_mst_tpdrecon as p on a.recon_code = p.pdrecon_code
+and p.active_status = 'Y'
+and p.delete_flag = 'N' left join recon_mst_tdataset as b on a.dataset_code = b.dataset_code left join recon_mst_trecondataset as rd on a.recon_code = rd.recon_code and a.dataset_code = rd.dataset_code and rd.dataset_type in ('B','T') and rd.active_status = 'Y' and rd.delete_flag = 'N'"
+where sp_name = 'pr_run_pdtranwithbrkpexcprpt';
+
+-- pr_run_pdtranreport
+
+update recon_mst_treport set table_joins = "recon_trn_ttranko as a
+			inner join recon_mst_tpdrecon as p on a.recon_code = p.pdrecon_code
+				and p.active_status = 'Y'
+				and p.delete_flag = 'N'
+      left join recon_mst_tdataset as b on a.dataset_code = b.dataset_code and b.delete_flag = 'N'
+	  where a.delete_flag = 'N'"
+where sp_name = 'pr_run_pdtranreport';
+
+-- pr_run_jobreport
+ update recon_mst_treport set table_joins = "recon_trn_tjob as a
+		left join recon_mst_tjobtype as b on a.jobtype_code = b.jobtype_code and b.delete_flag = 'N'
+		left join recon_mst_trecon as c on a.recon_code = c.recon_code and c.delete_flag = 'N'
+		left join recon_mst_tjobstatus d on a.job_status = d.job_status and d.delete_flag = 'N'
+		where a.delete_flag = 'N'" where sp_name = 'pr_run_jobreport';
+
+-- pr_run_pdtranwithbrkpreport
+update recon_mst_treport set table_joins ="_tran as a inner join recon_mst_tpdrecon as p on a.recon_code = p.pdrecon_code
+						and p.active_status = 'Y'
+						and p.delete_flag = 'N'left join recon_mst_tdataset as b on a.dataset_code = b.dataset_code left join recon_mst_trecondataset as rd on a.recon_code = rd.recon_code and a.dataset_code = rd.dataset_code and rd.dataset_type in ('B','T') and rd.active_status = 'Y' and rd.delete_flag = 'N'"
+where sp_name = 'pr_run_pdtranwithbrkpreport';
+
+-- pr_run_manualpostreport
+update recon_mst_treport set table_joins = "recon_trn_tmanualtranbrkp as a
+    inner join con_trn_tscheduler as b on a.scheduler_gid = b.scheduler_gid and b.delete_flag = 'N'
+    where a.delete_flag = 'N'" where sp_name = 'pr_run_manualpostreport';
+
+-- pr_con_fileimport_report
+DELIMITER $$
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_fileimport_report`(in in_import_from datetime,in in_import_to datetime)
+BEGIN
+select distinct 
+	concat(b.pipeline_code ,' - ',b.pipeline_name ) as pipeline_code_name,
+	concat(c.target_dataset_code,' - ',ds.dataset_name) as dataset_code_name,
+	a.file_name,
+    -- a.scheduler_start_date,
+    -- a.scheduler_end_date,
+    str_to_date(a.scheduler_start_date,'%Y-%m-%d %H:%i:%s') as scheduler_start_date,
+    str_to_date(a.scheduler_end_date,'%Y-%m-%d %H:%i:%s') as scheduler_end_date,
+    -- fn_get_import_rec_count(a.scheduler_gid) as import_rec_count,
+	-- fn_get_valid_rec_count(a.scheduler_gid) as valid_rec_count,
+    -- fn_get_error_rec_count(a.scheduler_gid) as Error_rec_count,
+    0 as import_rec_count,
+    0 as valid_rec_count,
+    0 as Error_rec_count,
+    0 as dataset_moved_count,
+    a.scheduler_status,
+	e.errorlog_exception,
+    a.scheduler_initiated_by as import_by,
+	a.scheduler_gid
+from con_trn_tscheduler as a
+inner join con_mst_tpipeline as b on a.pipeline_code = b.pipeline_code 
+and b.pipeline_status = 'Active' and b.delete_flag = 'N'
+inner join con_trn_tpipelinedetails as c on a.pipeline_code = c.pipeline_code 
+and a.dataset_code = c.target_dataset_code and c.pipelinedet_status = 'Active' 
+and c.delete_flag = 'N'
+inner join con_mst_tdataset as ds on c.target_dataset_code = ds.dataset_code 
+and ds.delete_flag = 'N' and ds.active_status = 'Y'
+left join con_trn_tbcp as d on a.scheduler_gid = d.scheduler_gid
+left join con_trn_terrorlog as e on a.scheduler_gid = e.errorlog_scheduler_gid
+where a.delete_flag = 'N' 
+-- and a.scheduler_gid = 4752
+and a.scheduler_start_date >= in_import_from
+and a.scheduler_start_date < DATE_ADD(in_import_to, INTERVAL 1 DAY)
+order by 1 desc;
+END$$
+DELIMITER ;
+
+--pr_con_pipelinedsmapped_report
+
+DELIMITER $$
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_pipelinedsmapped_report`(in in_pipeline_code varchar(32),
+in in_dataset_code varchar(32) )
+BEGIN
+	if in_pipeline_code = '' then
+		set in_pipeline_code = null;
+	end if;
+    
+	if in_dataset_code = '' then
+		set in_dataset_code = null;
+	end if;
+    
+	select distinct
+        con.source_db_type as connector_type,
+		concat(a.pipeline_code ,' - ',a.pipeline_name ) as pipeline_code_name,
+		concat(c.dataset_code,' - ',c.dataset_name) as dataset_code_name, 
+		e.upload_mode,
+		e.key_field,
+        (SELECT GROUP_CONCAT(d.dataset_field_desc ORDER BY d.dataset_field_name)
+			FROM con_mst_tdataset_field d
+			WHERE FIND_IN_SET(d.dataset_field_name, e.key_field)
+			AND d.dataset_code = c.dataset_code
+			AND d.active_status = 'Y'
+			AND d.delete_flag = 'N'
+		) AS key_field_desc,
+        e.run_type,
+        e.cron_expression,
+		b.pipelinedet_status,
+        e.updated_by,
+        case 
+			when e.updated_date = '' or e.updated_date is null then '0001-01-01 00:00:00'
+			else str_to_date(e.updated_date ,'%Y-%m-%d %H:%i:%s')
+		end as updated_date
+	from con_mst_tpipeline as a
+    inner join con_mst_tconnection as con on con.connection_code = a.connection_code 
+    and con.connection_status = 'Active' and con.delete_flag = 'N'
+	left join con_trn_tpipelinedetails as b on a.pipeline_code = b.pipeline_code
+	and b.delete_flag = 'N'
+	left join con_mst_tdataset as c on b.target_dataset_code = c.dataset_code 
+	and c.active_status = 'Y' and c.delete_flag = 'N'
+	left join con_mst_tdataset_field as d on c.dataset_code = d.dataset_code 
+	and d.active_status = 'Y' and d.delete_flag = 'N' 
+	left join con_trn_tpplfinalization as e on b.pipeline_code = e.pipeline_code 
+	and b.target_dataset_code = e.dataset_code and e.delete_flag = 'N'
+	where a.pipeline_status = 'Active'
+	and case when in_pipeline_code is null then 1 = 1
+		else a.pipeline_code = in_pipeline_code end
+	and case when in_dataset_code is null then 1 = 1
+		else b.target_dataset_code = in_dataset_code end
+	order by 1 desc; 
+END$$
+DELIMITER ;
+
+-- pr_run_pdtranbrkpreport
+
+update recon_mst_treport set table_joins = "recon_trn_ttranbrkp as a
+			inner join recon_mst_tpdrecon as p on a.recon_code = p.pdrecon_code
+			and p.active_status = 'Y'
+			and p.delete_flag = 'N'
+			left join recon_mst_tdataset as b on a.tranbrkp_dataset_code = b.dataset_code
+			and b.delete_flag = 'N'
+			left join recon_trn_ttran as c on a.tran_gid = c.tran_gid and c.delete_flag = 'N'
+			left join recon_trn_ttranko as d on a.tran_gid = d.tran_gid and d.delete_flag = 'N'
+			left join recon_mst_tdataset as f on a.dataset_code = f.dataset_code
+			and f.delete_flag = 'N'
+			where true "
+where sp_name = 'pr_run_pdtranbrkpreport';
+
+-- pr_con_upd_duplicaterecords;
+
+DROP procedure IF EXISTS `pr_con_upd_duplicaterecords`;
+
+DELIMITER $$
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_upd_duplicaterecords`(
+IN pipelinecode varchar(32),
+IN datasetcode varchar(32),
+IN schedulerid int)
+me:BEGIN
+declare v_sql text default "";
+declare v_upload_mode varchar(64);
+declare v_target_dsdbname varchar(64);
+declare v_target_dataset varchar(64);
+    
+    #Get Target Database Name 
+    select config_value into v_target_dsdbname from con_mst_tconfig 
+    where config_name = 'target_dataset_db'
+    and delete_flag = 'N';
+    
+    select pd.target_dataset_code into v_target_dataset 
+    from con_mst_tpipeline as a
+    inner join con_trn_tpipelinedetails as pd on a.pipeline_code = pd.pipeline_code 
+    and pd.pipelinedet_status = 'Active' and pd.delete_flag = 'N'
+	where a.pipeline_code = pipelinecode 
+    and pd.target_dataset_code = datasetcode
+    and a.pipeline_status = 'Active'
+	and a.delete_flag = 'N';
+    
+    select upload_mode,reject_duplicate_flag,error_mode,duplicate_mode,key_field
+    into v_upload_mode,@reject_duplicate_flag,@errormode,@duplicate_mode,@keyfields 
+    from con_trn_tpplfinalization
+    where pipeline_code = pipelinecode
+    and dataset_code = datasetcode
+    and delete_flag = 'N';
+    
+    if @duplicate_mode = "Abort on Duplicates" then 
+        set @reject_duplicate_flag = 'Y';
+    elseif (@duplicate_mode = "Continue with Duplicates") and (v_upload_mode = "Insert or Update based on key" or v_upload_mode = "Insert or Update based on key with log") then
+        set @reject_duplicate_flag = 'Y';
+    end if;
+        
+    #Get Bcp Columns against Keyfield
+    set @replace_keyfields = concat("'",replace(@keyfields,",","','"),"'");
+    set v_sql = "";
+    set v_sql = concat("select 
+        group_concat(a.dataset_table_field) into @bcpcol
+        from con_trn_tpplfieldmapping as b
+        left join con_trn_tpplsourcefield as a on a.pipeline_code = b.pipeline_code 
+        and a.sourcefield_name = b.ppl_field_name
+        and a.delete_flag = 'N'
+        where b.pipeline_code =  '",pipelinecode,"'
+        and b.dataset_code =  '",datasetcode,"'
+        and b.dataset_field_name in (",@replace_keyfields,")
+        and (b.pipeline_code = a.pipeline_code or b.pplfieldmapping_flag = 1) 
+        and b.delete_flag = 'N';");
+    set @v_sql = v_sql;
+    -- select @v_sql as sql01;
+    prepare _sql from @v_sql;
+    execute _sql;
+    
+    #Tag Duplicate Records In BCP Table
+    if (@reject_duplicate_flag = 'Y') then
+        drop temporary table if exists temp_duplicates; 
+        set v_sql = "";
+        set v_sql = concat("CREATE TEMPORARY TABLE temp_duplicates AS
+        SELECT bcp_gid,",@bcpcol," FROM con_trn_tbcp
+        WHERE scheduler_gid = ",schedulerid," AND status_flag = 'V' AND delete_flag = 'N'
+        GROUP BY ",@bcpcol," HAVING COUNT(*) >= 1;");
+        set @v_sql = v_sql;
+        -- select @v_sql as sql001;
+        prepare _sql from @v_sql;
+        execute _sql;
+        
+        alter table temp_duplicates add primary key(bcp_gid);
+        
+        #Check the Duplicate record on given file and mark as Duplicate Record
+        set v_sql = "";
+        set v_sql = concat("UPDATE con_trn_tbcp SET validation_remarks = 'Duplicate Record',status_flag = 'N' ");
+        set v_sql = concat(v_sql,"WHERE 1 = 1 ");
+        set v_sql =concat(v_sql," AND scheduler_gid = ",schedulerid);
+        set v_sql =concat(v_sql," AND status_flag = 'V'    AND delete_flag = 'N' ");
+        set @v_sql = v_sql;
+        select @v_sql as sql0021;
+        prepare _sql from @v_sql;
+        execute _sql;
+
+        set v_sql = "";
+        set v_sql = concat("UPDATE con_trn_tbcp as a 
+            inner join temp_duplicates as b on a.bcp_gid = b.bcp_gid 
+            SET a.validation_remarks = '',a.status_flag = 'V' ");
+        set v_sql = concat(v_sql,"WHERE a.scheduler_gid = ",schedulerid);
+        set v_sql =concat(v_sql," AND a.status_flag = 'N'    AND a.delete_flag = 'N' ");
+        set @v_sql = v_sql;
+        -- select @v_sql as sql002;
+        prepare _sql from @v_sql;
+        execute _sql;
+        
+        if  v_upload_mode = 'Append' then
+            #Check the Duplicate record on given file and target dataset then mark as Duplicate Record
+            set v_sql = "";
+            set v_sql = concat("UPDATE con_trn_tbcp as a 
+                inner join ",v_target_dsdbname,".",v_target_dataset," as b 
+                on (a.",replace(@bcpcol,',',',a.'),") = (b.",replace(@keyfields,',',',b.'),") 
+                SET a.validation_remarks = 'Duplicate Record',a.status_flag = 'N' ");
+            set v_sql =concat(v_sql," where a.scheduler_gid = ",schedulerid);
+            set v_sql =concat(v_sql," AND a.status_flag = 'V'    AND a.delete_flag = 'N' ");
+            
+            set @v_sql = v_sql;
+            select @v_sql as sql3;
+            prepare _sql from @v_sql;
+            execute _sql;
+        end if;
+    end if;
+END$$
+
+DELIMITER ;
+;
+
+--pr_con_get_Datasetfield
+
+DROP procedure IF EXISTS `pr_con_get_Datasetfield`;
+
+
+DELIMITER $$
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_get_Datasetfield`(
+	in in_pipeline_code varchar(32),
+    in in_dataset_code varchar(32)
+)
+BEGIN
+
+	DECLARE v_dataset_exists INT DEFAULT 0;
+    
+    SELECT COUNT(1) INTO v_dataset_exists
+    FROM recon_mst_tdataset
+    WHERE dataset_code = in_dataset_code AND delete_flag = 'Y';
+    
+    IF v_dataset_exists > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Error: Inactive dataset code provided.', MYSQL_ERRNO = 1001;
+    END IF;
+    
+    SELECT distinct ds.dataset_gid,ds.dataset_code,ds.pipeline_code as parent_pipeline_code,ifnull(pi.pipeline_name,'-') as parent_pipeline_name
+    ,dsf.datasetfield_gid,dsf.dataset_code,dsf.dataset_seqno,TRIM(dsf.field_name) as field_name,upper(dsf.field_type) as field_type,dsf.system_flag
+    -- ,GROUP_CONCAT(TRIM(dsf.field_name) ORDER BY dsf.dataset_field_sno SEPARATOR ',') AS dataset_field_names
+    ,(SELECT GROUP_CONCAT(TRIM(dsf.field_name) ORDER BY dsf.dataset_field_sno SEPARATOR ',') AS dataset_field_names
+		FROM recon_mst_tdataset AS ds
+		INNER JOIN recon_mst_tdatasetfield AS dsf ON ds.dataset_code = dsf.dataset_code AND dsf.delete_flag = 'N' AND dsf.active_status = 'Y'
+		WHERE ds.delete_flag = 'N' AND  ds.system_flag in ('P' ,'N', 'Y') AND ds.active_status IN ('Y','D')
+		AND ds.dataset_code = in_dataset_code) AS dataset_field_names
+    ,case when dsf.field_type = 'DATE' then ifnull(ps.sourcefield_format,'--Select--') 
+    when dsf.field_type = 'NUMERIC' then concat(ifnull(dsf.precision_length,0),',',ifnull(dsf.scale_length,0)) else dsf.field_length end field_length
+    ,dsf.precision_length,dsf.scale_length,dsf.field_mandatory,dsf.dataset_field_sno,dsf.dataset_table_field
+    ,case when dsf.active_status = 'Y' then 'Active' when dsf.active_status = 'D' then 'Draft' when dsf.active_status = 'N' then 'In_Active' end dataset_status
+	,ifnull(p.pipeline_code, in_pipeline_code) as pipeline_code,Ifnull(p.pplfieldmapping_gid, 0) as pplfieldmapping_gid,Ifnull(p.pplfieldmapping_flag, 0) as pplfieldmapping_flag,p.ppl_field_name as ppl_field_name1,dsf.system_flag
+    ,case -- when ifnull(p.ppl_field_name,'--Select--') = "" then dsf.field_name 
+    when (dsf.system_flag = "P" && p.ppl_field_name != "-- Select --")then ifnull(p.ppl_field_name,dsf.field_name)
+    when (dsf.system_flag = "P" && p.ppl_field_name = "-- Select --")then p.mapped_field_name
+    when ifnull(p.ppl_field_name, '-- Select --') = "-- Select --" then fn_get_matched_field_name(in_pipeline_code,in_dataset_code,dsf.field_name) 
+    when p.ppl_field_name = "-- Select --" then p.mapped_field_name
+    else p.ppl_field_name
+    end ppl_field_name
+    ,p.ppl_field_name as mapped_ppl_field_name,p.mapped_field_name as previous_mapped_field_name,ifnull(p.dataset_field_name, dsf.dataset_table_field) as dataset_field_name,p.default_value,ps.pplsourcefield_gid
+   ,case when ifnull(ps.sourcefield_format,'--Select--') = " " then "--Select--" else ifnull(ps.sourcefield_format,'--Select--') end as pplsourcefield_format,
+   fn_con_get_fieldmappedstatus(in_pipeline_code,in_dataset_code) as has_saved
+   ,case when (p.ppl_field_name != '--Select--' && p.ppl_field_name != '-- Select --' && p.ppl_field_name != "") then 'Y'
+   when (p.ppl_field_name = "" || p.ppl_field_name = '--Select--' || p.ppl_field_name = '-- Select --' ) then 'N'
+	when (ifnull(p.ppl_field_name,fn_get_matched_field_name(in_pipeline_code,in_dataset_code,dsf.field_name)) != '-- Select --'
+		  )then 'Y'
+	else 'N' end as field_mapped
+   ,case when ds.pipeline_code = in_pipeline_code then 'Y' else 'N' end as its_parent_pipeline
+   ,(select ifnull(source_type,"-") from con_trn_tpplsourcefield
+	where sourcefield_name = p.ppl_field_name and dataset_code = in_dataset_code and pipeline_code = in_pipeline_code and delete_flag = 'N') as source_type
+   ,(select pipelinedet_dataset_type from con_trn_tpipelinedetails 
+		where pipeline_code = in_pipeline_code and delete_flag = 'N' and target_dataset_code = in_dataset_code ) pipelinedet_dataset_type
+   ,(select pipelinedet_status from con_trn_tpipelinedetails 
+		where pipeline_code = in_pipeline_code and delete_flag = 'N' and target_dataset_code = in_dataset_code ) Status
+    FROM recon_mst_tdataset AS ds
+	LEFT JOIN ( SELECT ds.system_flag,dsf.* FROM recon_mst_tdataset AS ds 
+				INNER JOIN recon_mst_tdatasetfield AS dsf on ds.dataset_code = dsf.dataset_code AND dsf.delete_flag = 'N' 
+                AND dsf.active_status = 'Y'
+                WHERE ds.dataset_code = in_dataset_code
+                ) AS dsf on ds.dataset_code = dsf.dataset_code
+	LEFT JOIN (SELECT p.* FROM con_mst_tpipeline AS p				
+				WHERE 1=1 AND p.delete_flag = 'N' 
+                AND p.pipeline_status NOT IN ('Inactive') 
+                ) AS pi ON ds.pipeline_code = pi.pipeline_code
+    LEFT JOIN (SELECT p.pipeline_code
+				-- ,ps.pplsourcefield_gid,ps.sourcefield_name,ps.sourcefield_sno,ps.sourcefield_datatype,ps.source_type,ps.sourcefieldmapping_flag
+                -- ,ps.sourcefield_format
+                ,pf.pplfieldmapping_gid,pf.pplfieldmapping_flag
+                ,pf.ppl_field_name as ppl_field_name,ifnull(pf.mapped_field_name,'-- Select --') as mapped_field_name,pf.dataset_field_name,pf.default_value,pf.dataset_code
+				FROM con_mst_tpipeline AS p
+                INNER JOIN con_trn_tpipelinedetails AS pd on p.pipeline_code = pd.pipeline_code -- AND p.dataset_code = pd.dataset_code
+                AND pd.delete_flag = 'N'
+                -- INNER JOIN con_trn_tpplsourcefield AS ps on p.pipeline_code = ps.pipeline_code AND pd.target_dataset_code = ps.dataset_code
+                -- AND ps.delete_flag = 'N'
+				INNER JOIN con_trn_tpplfieldmapping AS pf on p.pipeline_code = pf.pipeline_code AND pf.delete_flag = 'N'
+                -- AND ps.sourcefield_name = pf.ppl_field_name
+                AND pd.target_dataset_code = pf.dataset_code
+                WHERE pf.dataset_code = in_dataset_code AND pf.pipeline_code = in_pipeline_code AND p.delete_flag = 'N'
+                ) AS p on dsf.dataset_table_field = p.dataset_field_name
+	LEFT JOIN (SELECT p.pipeline_code,ps.dataset_code
+				,ps.pplsourcefield_gid,ps.sourcefield_name,ps.sourcefield_sno,ps.sourcefield_datatype,ps.source_type,ps.sourcefieldmapping_flag
+                ,ps.sourcefield_format
+				FROM con_mst_tpipeline AS p
+                INNER JOIN con_trn_tpipelinedetails AS pd on p.pipeline_code = pd.pipeline_code -- AND p.dataset_code = pd.dataset_code
+                AND pd.delete_flag = 'N'
+                INNER JOIN con_trn_tpplsourcefield AS ps on p.pipeline_code = ps.pipeline_code AND pd.target_dataset_code = ps.dataset_code
+                AND ps.delete_flag = 'N' AND ps.sourcefield_format not in ("",'--Select--','-- Select --')
+                ) AS ps ON p.pipeline_code = ps.pipeline_code AND p.dataset_code = ps.dataset_code AND ps.sourcefield_name = p.ppl_field_name
+	WHERE ds.dataset_code = in_dataset_code AND ds.system_flag in ('P','N','Y') 
+    AND ds.active_status in ('Y','D') order by dsf.dataset_seqno,dsf.dataset_field_sno;
+
+		
+END$$
+
+DELIMITER ;
+;
+
+--pr_con_pipeline_dataset_clone
+
+DROP procedure IF EXISTS `pr_con_pipeline_dataset_clone`;
+
+DELIMITER $$
+
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_pipeline_dataset_clone`(
+in in_pipeline_code varchar (32),
+in in_clone_dataset_code varchar (64),
+-- in in_new_dataset_name varchar(255),
+in in_new_dataset_code varchar (32),
+in in_user_code varchar(32),
+out out_msg text,
+out out_result int(10)
+)
+me:BEGIN
+
+declare err_msg text default '';
+declare err_flag varchar(10) default false;
+declare v_dataset_code varchar(32);
+declare v_dataset_db_name text default '';
+declare v_dataset_table_name text default '';
+declare v_role_code text default '';
+declare v_lang_code text default '';
+
+DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    GET DIAGNOSTICS CONDITION 1 @sqlstate = RETURNED_SQLSTATE,
+    @errno = MYSQL_ERRNO, @text = MESSAGE_TEXT;
+    SET @full_error = CONCAT("ERROR ", @errno, " (", @sqlstate, "): ", @text);
+
+    ROLLBACK;
+    set out_result = 0;
+    set out_msg = @full_error;
+  END;
+
+/*if trim(in_new_dataset_name) = "" then
+    set err_msg := concat(err_msg,'Dataset name cannot be empty,');
+    set err_flag := true;
+end if;
+
+if exists  (select '*' from recon_mst_tdataset
+			where trim(dataset_name) = trim(in_new_dataset_name)
+			and delete_flag = 'N') then
+    set err_msg := concat(err_msg,'Given dataset name is already taken,');
+    set err_flag := true;
+end if;*/
+
+/*if exists (select '*' from con_trn_tpipelinedetails
+			where pipelinedet_status != 'Active'
+            and pipeline_code = in_pipeline_code
+            and target_dataset_code = in_clone_dataset_code
+			and delete_flag = 'N') then
+    set err_msg := concat(err_msg,'Given Pipeline dataset is not in active status,');
+    set err_flag := true;
+end if; */
+
+if trim(in_pipeline_code) = "" then
+    set err_msg := concat(err_msg,'Pipeline code cannot be empty,');
+    set err_flag := true;
+end if;
+
+if trim(in_clone_dataset_code) = "" then
+    set err_msg := concat(err_msg,'Dataset code cannot be empty,');
+    set err_flag := true;
+end if;
+
+if trim(in_new_dataset_code) = "" then
+    set err_msg := concat(err_msg,'New Dataset code cannot be empty,');
+    set err_flag := true;
+end if;
+
+if err_flag = false then
+      --  set v_dataset_code = fn_get_autocode('DS');
+        set v_dataset_code = in_new_dataset_code;
+		set v_dataset_db_name = fn_get_configvalue('dataset_db_name');
+		set v_dataset_db_name = ifnull(v_dataset_db_name,'');
+		if v_dataset_db_name <> '' then
+			set v_dataset_table_name = concat(v_dataset_db_name,'.',v_dataset_code);
+		else
+			set v_dataset_table_name = v_dataset_code;
+		end if;
+	/*insert into recon_mst_tdataset
+		(
+		dataset_code,dataset_name, dataset_category, dataset_table_name,
+		pipeline_code, system_flag, active_status, insert_date, insert_by, delete_flag)
+	SELECT 
+		v_dataset_code, in_new_dataset_name, dataset_category, v_dataset_table_name,
+		in_pipeline_code,'P', 'Y',now(),in_user_code, 'N'
+	FROM recon_mst_tdataset 
+	where dataset_code = in_clone_dataset_code 
+	and active_status = 'Y' and delete_flag = 'N'; */
+    
+    insert into con_trn_tpipelinedetails
+    ( 
+    pipeline_code, target_dataset_code, scheduler_path, pipelinedet_dataset_type, db_name,
+    table_view_query_desc,table_view_query_type,pipelinedet_status,created_date,created_by, delete_flag)
+    select
+     in_pipeline_code, v_dataset_code, scheduler_path, 'Matched', db_name,
+     table_view_query_desc,table_view_query_type,'Active',now(),in_user_code,'N'
+     from con_trn_tpipelinedetails
+     where target_dataset_code = in_clone_dataset_code
+     and delete_flag = 'N';
+
+/*	insert into recon_mst_tdatasetfield
+    (
+    dataset_code, dataset_seqno,field_name,field_type,field_length,precision_length,scale_length,
+    field_mandatory,dataset_field_sno,dataset_table_field,active_status,insert_date,insert_by,delete_flag
+    )
+    select 
+    v_dataset_code,dataset_seqno,field_name,field_type,field_length,precision_length,scale_length,
+    field_mandatory,dataset_field_sno,dataset_table_field,'Y',now(),in_user_code, 'N'
+    from recon_mst_tdatasetfield
+    where dataset_code = in_clone_dataset_code
+	and active_status = 'Y' and delete_flag = 'N'; 
+    
+    call pr_recon_mst_tdatasetcontext (v_dataset_code,in_user_code,v_role_code,v_lang_code);    
+    call pr_create_datasettable(v_dataset_db_name,v_dataset_code,@msg,@result);*/
+
+-- pplsourcefield
+
+	 insert into con_trn_tpplsourcefield (
+		 pipeline_code,dataset_code, sourcefield_name,sourcefield_sno, sourcefield_datatype,sourcefield_format,
+		 sourcefield_expression, source_type,dataset_table_field,dataset_table_field_sno,cast_dataset_table_field,
+		 expressionfield_json, sourcefieldmapping_flag,created_date, created_by,delete_flag)
+	select in_pipeline_code, v_dataset_code,sourcefield_name,sourcefield_sno,sourcefield_datatype,sourcefield_format,
+		sourcefield_expression, source_type,dataset_table_field,dataset_table_field_sno,cast_dataset_table_field,
+		expressionfield_json, sourcefieldmapping_flag,now(),in_user_code,'N'
+		from  con_trn_tpplsourcefield
+		where pipeline_code = in_pipeline_code
+		and dataset_code = in_clone_dataset_code
+		and   delete_flag = 'N';
+    
+    -- pplcondition
+
+	insert into con_trn_tpplcondition (pipeline_code,dataset_code,condition_type,condition_name,
+				condition_text,condition_msg,sys_flag,created_date,created_by,delete_flag)
+    select in_pipeline_code,v_dataset_code,condition_type,condition_name,
+			condition_text, condition_msg,sys_flag,now(),'Admin','N'
+    from  con_trn_tpplcondition
+    where pipeline_code = in_pipeline_code
+    and dataset_code = in_clone_dataset_code
+    and delete_flag = 'N';
+-- fieldmapping
+
+    insert into con_trn_tpplfieldmapping (
+    pipeline_code,dataset_code,pplfieldmapping_flag,ppl_field_name,mapped_field_name,dataset_field_name,
+    default_value,created_date,created_by,delete_flag)
+    select pipeline_code,v_dataset_code,pplfieldmapping_flag,ppl_field_name,mapped_field_name,dataset_field_name,
+    default_value,now(),in_user_code,'N'
+    from con_trn_tpplfieldmapping
+    where pipeline_code = in_pipeline_code
+    and dataset_code = in_clone_dataset_code
+    and delete_flag = 'N';  
+    
+-- dataprocessingheader
+
+	insert into con_mst_tdataprocessingheader(dataprocessingheader_pplfieldmapping_gid,dataprocessingheader_pipeline_code,
+			dataprocessingheader_dataset_code, dataprocessingheader_seqno,dataprocessingheader_ppl_field_name,created_date,created_by,delete_flag)
+     select fn_get_pplfieldmapping_gid(in_pipeline_code,v_dataset_code,dataprocessingheader_ppl_field_name)			
+			,in_pipeline_code,v_dataset_code,dataprocessingheader_seqno, dataprocessingheader_ppl_field_name,now(),in_user_code,delete_flag
+	from con_mst_tdataprocessingheader 
+    where dataprocessingheader_pipeline_code = in_pipeline_code
+    and dataprocessingheader_dataset_code = in_clone_dataset_code
+    and delete_flag = 'N';
+    
+-- dataprocessingdetail
+
+	insert into con_mst_tdataprocessing(
+		     dataprocessing_header_gid,dataprocessing_child_master_gid,dataprocessing_parent_master_gid,
+			 dataprocessing_master_gid,dataprocessing_pipeline_gid,dataprocessing_pplfieldmapping_gid,dataprocessing_orderby,
+			 dataprocessing_param1,dataprocessing_param2,dataprocessing_param3,created_date,created_by,delete_flag)
+	select fn_get_dataprocessingheader_gid(in_pipeline_code,v_dataset_code,a.dataprocessingheader_ppl_field_name,a.dataprocessingheader_seqno),
+             b.dataprocessing_child_master_gid,b.dataprocessing_parent_master_gid,
+			 b.dataprocessing_master_gid,c.pipeline_gid,b.dataprocessing_pplfieldmapping_gid,b.dataprocessing_orderby,
+			 b.dataprocessing_param1,b.dataprocessing_param2,b.dataprocessing_param3,now(),in_user_code,b.delete_flag
+	from con_mst_tdataprocessingheader as a
+	inner join con_mst_tdataprocessing as b on a.dataprocessingheader_gid = b.dataprocessing_header_gid
+	and b.delete_flag = 'N'
+    inner join con_mst_tpipeline as c on c.pipeline_code = in_pipeline_code
+	and c.delete_flag = 'N'
+	where a.dataprocessingheader_pipeline_code = in_pipeline_code
+    and a.dataprocessingheader_dataset_code = in_clone_dataset_code
+	and a.delete_flag = 'N';
+    
+-- pplfinalization
+
+insert into con_trn_tpplfinalization (pipeline_code,dataset_code,run_type,cron_expression,extract_mode,
+				upload_mode,key_field,extract_condition,pull_days,reject_duplicate_flag,error_mode,
+                duplicate_mode,last_incremental_val,parent_dataset_code,created_date,created_by,delete_flag)
+    select in_pipeline_code,v_dataset_code,run_type,cron_expression,extract_mode,upload_mode,
+			key_field,extract_condition,pull_days,reject_duplicate_flag,error_mode,
+            duplicate_mode,last_incremental_val,parent_dataset_code,now(),in_user_code,delete_flag
+			from con_trn_tpplfinalization 
+			where pipeline_code = in_pipeline_code
+			and dataset_code = in_clone_dataset_code
+			and delete_flag = 'N';           
+  set out_result = 1;
+  set out_msg = "Cloning Completed";
+else
+  set out_result = 0;
+  set out_msg = err_msg;
+  leave me;
+end if;
+END$$
+
+DELIMITER ;
+;
+
+-- pr_con_report_ppldatasetdetails
+
+
+DROP procedure IF EXISTS `pr_con_report_ppldatasetdetails`;
+
+
+DELIMITER $$
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_report_ppldatasetdetails`(
+	in in_pipeline_code varchar(32),
+    in in_dataset_code varchar(32)
+)
+BEGIN
+
+	DECLARE v_dataset_exists INT DEFAULT 0;
+    SELECT COUNT(1) INTO v_dataset_exists
+    FROM recon_mst_tdataset
+    WHERE dataset_code = in_dataset_code AND delete_flag = 'Y';
+    
+    IF v_dataset_exists > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Error: Inactive dataset code provided.', MYSQL_ERRNO = 1001;
+    END IF;
+    
+    -- Pipeline header
+    
+    select
+		pipeline_code as 'Pipeline Code',
+		pipeline_name as 'Pipeline Name',
+        b.connection_name as 'Connector',
+		source_file_name as 'File Name',
+		sheet_name as 'Sheet Name',
+        db_name as 'DB Name',
+        case 
+			when table_view_query_type = 'V' then 'View'
+            when table_view_query_type = 'T' then 'Table'
+            when table_view_query_type = 'Q' then 'Query'
+		end as 'Type',
+        table_view_query_desc as 'TVQ Description',
+		pipeline_status as 'Status'
+	from con_mst_tpipeline a
+    inner join con_mst_tconnection b on b.connection_code = a.connection_code and b.delete_flag='N'
+	where pipeline_code = in_pipeline_code and a.delete_flag = 'N';
+    
+     -- Dataset list
+    select 
+    '10f' as 'Dataset Code',
+    '10f' as 'Dataset Name',
+	'10f' as 'Dataset Category',
+    '10f' as 'Pipeline Dataset Type',
+    '10f' as 'Mapping Status'
+    union all
+    select a.dataset_code as 'Dataset Code', a.dataset_name as 'Dataset Name',
+    a.dataset_category as 'Dataset Category',b.pipelinedet_dataset_type  as 'Pipeline Dataset Type',
+    b.pipelinedet_status  as 'Mapping Status'
+    from recon_mst_tdataset a
+	inner join con_trn_tpipelinedetails b on b.target_dataset_code = in_dataset_code and b.delete_flag='N'
+	where b.pipeline_code = in_pipeline_code
+    and a.dataset_code = in_dataset_code
+    and a.delete_flag = 'N';
+    
+    -- Dataset Field details
+    select 
+		0 as 'Seq No',
+		'10f' as 'Dataset Field Name',
+		'10f' as 'Source Field Name',
+		'8f' as 'Field Type',
+		'8f' as 'Field Length',
+		'10f' as 'Field Manadatory'
+    union all
+    select c.* from (SELECT 
+    dsf.dataset_seqno as 'Seq No',
+    TRIM(dsf.field_name) as 'Dataset Field Name',
+    case 
+		when (dsf.system_flag = "P" && p.ppl_field_name != "-- Select --")then ifnull(p.ppl_field_name,dsf.field_name)
+		when (dsf.system_flag = "P" && p.ppl_field_name = "-- Select --")then p.mapped_field_name
+		when ifnull(p.ppl_field_name, '-- Select --') = "-- Select --" then fn_get_matched_field_name(in_pipeline_code,in_dataset_code,dsf.field_name) 
+		when p.ppl_field_name = "-- Select --" then p.mapped_field_name
+    else p.ppl_field_name
+    end as 'Source Field Name',
+    upper(dsf.field_type) as 'Field Type',
+    case 
+		when dsf.field_type = 'DATE' then ifnull(ps.sourcefield_format,'--Select--') 
+		when dsf.field_type = 'NUMERIC' then concat(ifnull(dsf.precision_length,0),',',ifnull(dsf.scale_length,0)) 
+        else dsf.field_length 
+	end as 'Field Length',
+    case 
+		when dsf.field_mandatory = 'Y' then 'YES'
+		when dsf.field_mandatory = 'N' then 'NO'
+    end as 'Field Manadatory'    
+    FROM recon_mst_tdataset AS ds
+	LEFT JOIN ( SELECT ds.system_flag,dsf.* FROM recon_mst_tdataset AS ds 
+				INNER JOIN recon_mst_tdatasetfield AS dsf on ds.dataset_code = dsf.dataset_code AND dsf.delete_flag = 'N' 
+                AND dsf.active_status = 'Y'
+                WHERE ds.dataset_code = in_dataset_code
+                ) AS dsf on ds.dataset_code = dsf.dataset_code
+	LEFT JOIN (SELECT p.* FROM con_mst_tpipeline AS p				
+				WHERE 1=1 AND p.delete_flag = 'N' 
+                AND p.pipeline_status NOT IN ('Inactive') 
+                ) AS pi ON ds.pipeline_code = pi.pipeline_code
+    LEFT JOIN (SELECT p.pipeline_code
+                ,pf.pplfieldmapping_gid,pf.pplfieldmapping_flag
+                ,pf.ppl_field_name as ppl_field_name,ifnull(pf.mapped_field_name,'-- Select --') as mapped_field_name,pf.dataset_field_name,pf.default_value,pf.dataset_code
+				FROM con_mst_tpipeline AS p
+                INNER JOIN con_trn_tpipelinedetails AS pd on p.pipeline_code = pd.pipeline_code -- AND p.dataset_code = pd.dataset_code
+                AND pd.delete_flag = 'N'
+				INNER JOIN con_trn_tpplfieldmapping AS pf on p.pipeline_code = pf.pipeline_code AND pf.delete_flag = 'N'
+                AND pd.target_dataset_code = pf.dataset_code
+                WHERE pf.dataset_code = in_dataset_code AND pf.pipeline_code = in_pipeline_code AND p.delete_flag = 'N'
+                ) AS p on dsf.dataset_table_field = p.dataset_field_name
+	LEFT JOIN (SELECT p.pipeline_code,ps.dataset_code
+				,ps.pplsourcefield_gid,ps.sourcefield_name,ps.sourcefield_sno,ps.sourcefield_datatype,ps.source_type,ps.sourcefieldmapping_flag
+                ,ps.sourcefield_format
+				FROM con_mst_tpipeline AS p
+                INNER JOIN con_trn_tpipelinedetails AS pd on p.pipeline_code = pd.pipeline_code -- AND p.dataset_code = pd.dataset_code
+                AND pd.delete_flag = 'N'
+                INNER JOIN con_trn_tpplsourcefield AS ps on p.pipeline_code = ps.pipeline_code AND pd.target_dataset_code = ps.dataset_code
+                AND ps.delete_flag = 'N' AND ps.sourcefield_format not in ("",'--Select--','-- Select --')
+                ) AS ps ON p.pipeline_code = ps.pipeline_code AND p.dataset_code = ps.dataset_code AND ps.sourcefield_name = p.ppl_field_name
+	WHERE ds.dataset_code = in_dataset_code AND ds.system_flag in ('P','N','Y') 
+    AND ds.active_status in ('Y','D') ) as c order by `Seq No`;
+    
+    -- Filters 
+     select 
+    '10f' as 'Condition Type',
+	'10f' as 'Condition'
+    union all
+    select 
+    condition_type as 'Condition Type', 
+    condition_text as 'Condition' 
+    from con_trn_tpplcondition 
+    where pipeline_code = in_pipeline_code 
+    and dataset_code = in_dataset_code 
+    and condition_type in ('Rejection','Filter')
+    and delete_flag = 'N';
+
+-- validation
+	select 
+    '10f' as 'Validation Name',
+    '20f' as 'Condition',
+    '10f' as 'Message',
+    '5f' as 'Type'  
+    union all
+    select 
+    condition_name as 'Validation Name',
+     condition_text as 'Condition',     
+    condition_msg as 'Message',
+       case 
+		when sys_flag = 'Y' then 'System'
+		when sys_flag = 'N' then 'User'
+    end as 'Type'
+    from con_trn_tpplcondition 
+    where pipeline_code = in_pipeline_code 
+    and dataset_code = in_dataset_code 
+    and condition_type in ('Validation')
+    and delete_flag = 'N';
+    
+ -- conversion Rule
+  select 
+ '10f' as 'Seq No',
+ '10f' as 'Source Field Name'
+ union all
+  select 
+        dataprocessingheader_seqno as 'Seq No',
+        dataprocessingheader_ppl_field_name as 'Source Field Name'
+    from con_mst_tdataprocessingheader
+    where 
+        delete_flag = 'N'
+        and dataprocessingheader_pipeline_code = in_pipeline_code
+        and dataprocessingheader_dataset_code = in_dataset_code
+        and delete_flag = 'N';
+        
+  -- conversion rule details
+  select 
+  '10f' AS 'Source field Name',
+   '10f' AS 'Seq No',
+  '10f' AS 'Rule',
+  '10f' AS 'Rule Type',
+  '10f' AS 'Sub Rule Type',
+  '5f' AS 'Param 1',
+  '5f' AS 'Param 2',
+  '5f' AS 'Param 3'
+  union all
+  SELECT 
+    fm.ppl_field_name AS 'Source field Name', -- dataprocessing_ppl_field_name,
+    dp.dataprocessing_orderby AS 'Seq No',
+	pm.master_name AS 'Rule', -- dataprocessing_master_name,
+    ppm.master_name AS 'Rule Type', -- dataprocessing_parent_master_name,
+    COALESCE(cm.master_name, '-') AS 'Sub Rule Type', -- dataprocessing_child_master_name,    
+    dp.dataprocessing_param1 AS 'Param 1',
+    dp.dataprocessing_param2 as 'Param 2',
+    dp.dataprocessing_param3 as 'Param 3'  
+FROM con_mst_tdataprocessing dp
+JOIN con_trn_tpplfieldmapping fm 
+    ON dp.dataprocessing_pplfieldmapping_gid = fm.pplfieldmapping_gid
+JOIN con_mst_tmaster pm 
+    ON dp.dataprocessing_master_gid = pm.master_gid
+JOIN con_mst_tmaster ppm 
+    ON dp.dataprocessing_parent_master_gid = ppm.master_gid
+LEFT JOIN con_mst_tmaster cm 
+    ON dp.dataprocessing_child_master_gid = cm.master_gid
+JOIN con_mst_tdataprocessingheader dph 
+    ON dp.dataprocessing_header_gid = dph.dataprocessingheader_gid
+WHERE 
+    dph.dataprocessingheader_pipeline_code = in_pipeline_code
+    and dph.dataprocessingheader_dataset_code = in_dataset_code
+    AND dp.delete_flag = 'N'
+    AND fm.delete_flag = 'N'
+    AND pm.delete_flag = 'N';
+    
+    -- finalization
+    select
+    '10f' as 'Run Type',
+    '10f' as 'Cron Expression',
+    '10f' as 'Parent Dataset',
+    '10f' as 'Upload Mode',
+     '10f' as 'Duplicate Mode',
+     '5f' as 'Reject Flag',
+    '10f' as 'Error Mode',   
+    '10f' as 'Key Field'
+    union all
+select 
+	run_type as 'Run Type',
+    cron_expression as 'Cron Expression',
+    fn_get_datasetname(parent_dataset_code) as 'Parent Dataset',
+    upload_mode as 'Upload Mode',
+    duplicate_mode as 'Duplicate Mode',    
+    case when reject_duplicate_flag = 'N' then 'No'
+    when reject_duplicate_flag = 'Y' then 'Yes'
+    end as 'Reject Flag',
+    error_mode as 'Error Mode',
+    (SELECT GROUP_CONCAT(d.dataset_field_desc ORDER BY d.dataset_field_name)
+            FROM con_mst_tdataset_field d
+            WHERE FIND_IN_SET(d.dataset_field_name, key_field)
+            AND d.dataset_code = in_dataset_code
+            AND d.active_status = 'Y'
+            AND d.delete_flag = 'N'
+        ) AS 'Key Field'
+   -- key_field as 'Key Field'
+from con_trn_tpplfinalization 
+where pipeline_code = in_pipeline_code 
+and dataset_code = in_dataset_code
+and delete_flag = 'N';
+END$$
+
+DELIMITER ;
+;
+
+-- pr_con_report_pipelinedetails
+
+
+DROP procedure IF EXISTS `pr_con_report_pipelinedetails`;
+
+DELIMITER $$
+
+CREATE DEFINER=`root`@`%` PROCEDURE `pr_con_report_pipelinedetails`(
+in in_pipeline_code varchar(25)
+)
+BEGIN
+select
+		pipeline_code as 'Pipeline Code',
+		pipeline_name as 'Pipeline Name',
+        b.connection_name as 'Connector',
+		source_file_name as 'File Name',
+		sheet_name as 'Sheet Name',
+		pipeline_status as 'Status'
+	from con_mst_tpipeline a
+    inner join con_mst_tconnection b on b.connection_code = a.connection_code and b.delete_flag='N'
+	where pipeline_code = in_pipeline_code and a.delete_flag = 'N';
+    
+    -- Dataset list
+    select 
+    '10f' as 'Dataset Code',
+    '10f' as 'Dataset Name',
+	'10f' as 'Dataset Category',
+    '10f' as 'Pipeline Dataset Type',
+    '10f' as 'Mapping Status'
+    union all
+    select a.dataset_code as 'Dataset Code', a.dataset_name as 'Dataset Name',
+    a.dataset_category as 'Dataset Category',b.pipelinedet_dataset_type  as 'Pipeline Dataset Type',
+    b.pipelinedet_status  as 'Mapping Status'
+    from recon_mst_tdataset a
+	inner join con_trn_tpipelinedetails b on b.target_dataset_code = a.dataset_code and b.delete_flag='N'
+	where b.pipeline_code = in_pipeline_code
+    and a.delete_flag = 'N';
+
+END$$
+
+DELIMITER ;
+;
+
+
+-- pandi changes
+
+CREATE TABLE `con_trn_tsupportingdoc` (
+   `supportingdoc_gid` int(11) NOT NULL AUTO_INCREMENT,
+   `pipeline_code` varchar(32) NOT NULL,
+   `supportingdoc_name` varchar(255) NOT NULL,
+   `supportingdoc_extension` varchar(10) DEFAULT NULL,
+   `supportingdoc_remarks` text,
+   `created_date` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   `created_by` varchar(255) NOT NULL,
+   `update_date` datetime DEFAULT NULL,
+   `updated_by` varchar(255) DEFAULT NULL,
+   `delete_flag` char(1) NOT NULL DEFAULT 'N',
+   `supportingdoc_size` varchar(10) DEFAULT NULL,
+   PRIMARY KEY (`supportingdoc_gid`)
+ ) ENGINE=InnoDB AUTO_INCREMENT=221 DEFAULT CHARSET=latin1
+
+-- pr_con_trn_tgetsupportingdoc
+
+DROP procedure IF EXISTS `pr_con_trn_tgetsupportingdoc`;
+
+DELIMITER $$
+CREATE PROCEDURE `pr_con_trn_tgetsupportingdoc` (
+	in in_supportingdoc_gid int(10),
+	in in_pipeline_code VARCHAR(32),
+    IN in_action VARCHAR(10))
+BEGIN
+    IF in_action = 'get' THEN
+        SELECT supportingdoc_gid,pipeline_code,supportingdoc_name,
+        supportingdoc_remarks,supportingdoc_size,supportingdoc_extension  FROM con_trn_tsupportingdoc  WHERE 
+        pipeline_code = in_pipeline_code AND delete_flag = 'N' order by supportingdoc_gid desc;
+    
+    ELSEIF in_action = 'fetch' THEN
+        SELECT * 
+        FROM con_trn_tsupportingdoc 
+        WHERE supportingdoc_gid = in_supportingdoc_gid
+          AND pipeline_code = in_pipeline_code
+          AND delete_flag = 'N';
+    END IF;
+END
+END$$
+
+DELIMITER ;
+;
+
+
+-- pr_con_trn_tsupportingdoc
+
+DROP procedure IF EXISTS `pr_con_trn_tsupportingdoc`;
+
+DELIMITER $$
+
+CREATE PROCEDURE `pr_con_trn_tsupportingdoc` (
+	inout in_supportingdoc_gid int(10),
+    in in_pipeline_code VARCHAR(32),
+    in in_supportingdoc_name VARCHAR(255),
+    in in_supportingdoc_remarks text, 
+    in in_supportingdoc_size varchar(10),
+    in in_action VARCHAR(32), 
+    in in_action_by VARCHAR(32),
+    out out_msg text,
+	out out_result int(10))
+BEGIN
+	set out_msg = '';
+		set out_result = 0;
+	if in_action = 'get' then
+	begin
+	 
+        select * from con_trn_tsupportingdoc 
+		where pipeline_code = in_pipeline_code
+		and delete_flag = 'N';
+		
+		set out_msg = 'Supporting Document Fetched Succesfully.';
+		set out_result = 1;
+	end;
+	elseif in_action = 'insert' then
+	begin
+		
+		insert into con_trn_tsupportingdoc(pipeline_code,supportingdoc_name,supportingdoc_remarks,supportingdoc_size,supportingdoc_extension,created_by)
+		values (in_pipeline_code,in_supportingdoc_name,in_supportingdoc_remarks,in_supportingdoc_size,
+				LOWER(SUBSTRING_INDEX(supportingdoc_name, '.', -1)),in_action_by);
+        
+		SET in_supportingdoc_gid = LAST_INSERT_ID();
+		set out_msg = 'Supporting Document Added Succesfully.';
+		set out_result = 1;
+        select out_result,out_msg,in_supportingdoc_gid as supportingdoc_gid,in_supportingdoc_name as supportingdoc_name;
+	end;
+	elseif in_action = 'delete' then
+	begin
+		
+		update con_trn_tsupportingdoc set delete_flag = 'Y' where supportingdoc_gid = in_supportingdoc_gid;
+		
+		set out_msg = 'Supporting Document Deleted Succesfully.';
+		set out_result = 1;
+	end;
+	end if;
+	
+END
+
+END$$
+
+DELIMITER ;
+;

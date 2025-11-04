@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+https://go.microsoft.com/fwlink/?LinkID=208121.
+-->
+<Project>
+  <PropertyGroup>
+    <_PublishTargetUrl>D:\Connector Publish\Api</_PublishTargetUrl>
+    <History>True|2025-01-24T10:35:05.8171161Z||;True|2025-01-23T10:50:06.1786058+05:30||;</History>
+    <LastFailureDetails />
+  </PropertyGroup>
+  <ItemGroup>
+    <File Include="Migrations/20231003121027_Initial.cs">
+      <publishTime>10/03/2023 17:44:38</publishTime>
+    </File>
+    <File Include="Migrations/20231003121027_Initial.Designer.cs">
+      <publishTime>10/03/2023 17:40:28</publishTime>
+    </File>
+    <File Include="Migrations/MyDbContextModelSnapshot.cs">
+      <publishTime>10/03/2023 17:40:28</publishTime>
+    </File>
+  </ItemGroup>
+</Project>

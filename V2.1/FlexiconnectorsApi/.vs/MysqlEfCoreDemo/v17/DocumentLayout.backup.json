@@ -1,0 +1,171 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|e:\\user\\hema\\connectors\\version2\\v2.1\\flexiconnectorsapi_v2.1\\flexiconnectorsapi\\appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}",
+      "RelativeMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|solutionrelative:appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|e:\\user\\hema\\connectors\\version2\\v2.1\\flexiconnectorsapi_v2.1\\flexiconnectorsapi\\controllers\\pipelinecontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|solutionrelative:controllers\\pipelinecontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|e:\\user\\hema\\connectors\\version2\\v2.1\\flexiconnectorsapi_v2.1\\flexiconnectorsapi\\program.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|solutionrelative:program.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|e:\\user\\hema\\connectors\\version2\\v2.1\\flexiconnectorsapi_v2.1\\flexiconnectorsapi\\data\\datasetdata.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|solutionrelative:data\\datasetdata.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|e:\\user\\hema\\connectors\\version2\\v2.1\\flexiconnectorsapi_v2.1\\flexiconnectorsapi\\controllers\\datasetcontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|solutionrelative:controllers\\datasetcontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|e:\\user\\hema\\connectors\\version2\\v2.1\\flexiconnectorsapi_v2.1\\flexiconnectorsapi\\models\\datasetmodel.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|solutionrelative:models\\datasetmodel.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|e:\\user\\hema\\connectors\\version2\\v2.1\\flexiconnectorsapi_v2.1\\flexiconnectorsapi\\models\\addpipelinerequest.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|solutionrelative:models\\addpipelinerequest.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|e:\\user\\hema\\connectors\\version2\\v2.1\\flexiconnectorsapi_v2.1\\flexiconnectorsapi\\models\\updatepipelinerequest.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|solutionrelative:models\\updatepipelinerequest.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|e:\\user\\hema\\connectors\\version2\\v2.1\\flexiconnectorsapi_v2.1\\flexiconnectorsapi\\data\\reportdata.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{70241242-48E4-4E7B-9834-CA0D1EFBD6F7}|MysqlEfCoreDemo.csproj|solutionrelative:data\\reportdata.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 2,
+          "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{1c4feeaa-4718-4aa9-859d-94ce25d182ba}"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "Program.cs",
+              "DocumentMoniker": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Program.cs",
+              "RelativeDocumentMoniker": "Program.cs",
+              "ToolTip": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Program.cs",
+              "RelativeToolTip": "Program.cs",
+              "ViewState": "AgIAAAgAAAAAAAAAAAAQwBcAAAAXAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-08-18T06:19:06.966Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "appsettings.json",
+              "DocumentMoniker": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\appsettings.json",
+              "RelativeDocumentMoniker": "appsettings.json",
+              "ToolTip": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\appsettings.json",
+              "RelativeToolTip": "appsettings.json",
+              "ViewState": "AgIAABsAAAAAAAAAAAAAACcAAAAZAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
+              "WhenOpened": "2025-08-11T05:05:01.213Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 8,
+              "Title": "ReportData.cs",
+              "DocumentMoniker": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Data\\ReportData.cs",
+              "RelativeDocumentMoniker": "Data\\ReportData.cs",
+              "ToolTip": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Data\\ReportData.cs",
+              "RelativeToolTip": "Data\\ReportData.cs",
+              "ViewState": "AgIAACUAAAAAAAAAAAA1wC0AAABjAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-08-05T07:28:31.169Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
+              "Title": "DatasetModel.cs",
+              "DocumentMoniker": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Models\\DatasetModel.cs",
+              "RelativeDocumentMoniker": "Models\\DatasetModel.cs",
+              "ToolTip": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Models\\DatasetModel.cs",
+              "RelativeToolTip": "Models\\DatasetModel.cs",
+              "ViewState": "AgIAAF8AAAAAAAAAAAAiwGUAAAAuAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-08-01T06:52:32.612Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "DatasetController.cs",
+              "DocumentMoniker": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Controllers\\DatasetController.cs",
+              "RelativeDocumentMoniker": "Controllers\\DatasetController.cs",
+              "ToolTip": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Controllers\\DatasetController.cs",
+              "RelativeToolTip": "Controllers\\DatasetController.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAHwAAAAxAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-08-01T06:51:33.227Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 6,
+              "Title": "AddPipelineRequest.cs",
+              "DocumentMoniker": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Models\\AddPipelineRequest.cs",
+              "RelativeDocumentMoniker": "Models\\AddPipelineRequest.cs",
+              "ToolTip": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Models\\AddPipelineRequest.cs",
+              "RelativeToolTip": "Models\\AddPipelineRequest.cs",
+              "ViewState": "AgIAAH8AAAAAAAAAAAAAwIcAAAAzAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-14T12:36:17.999Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 7,
+              "Title": "UpdatePipelineRequest.cs",
+              "DocumentMoniker": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Models\\UpdatePipelineRequest.cs",
+              "RelativeDocumentMoniker": "Models\\UpdatePipelineRequest.cs",
+              "ToolTip": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Models\\UpdatePipelineRequest.cs",
+              "RelativeToolTip": "Models\\UpdatePipelineRequest.cs",
+              "ViewState": "AgIAAHAAAAAAAAAAAAAUwHgAAAA3AAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-14T10:52:24.111Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "DatasetData.cs",
+              "DocumentMoniker": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Data\\DatasetData.cs",
+              "RelativeDocumentMoniker": "Data\\DatasetData.cs",
+              "ToolTip": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Data\\DatasetData.cs",
+              "RelativeToolTip": "Data\\DatasetData.cs",
+              "ViewState": "AgIAAJIAAAAAAAAAAAAwwKcAAAAeAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-14T05:17:40.953Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "PipelineController.cs",
+              "DocumentMoniker": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Controllers\\PipelineController.cs",
+              "RelativeDocumentMoniker": "Controllers\\PipelineController.cs",
+              "ToolTip": "E:\\user\\hema\\Connectors\\Version2\\V2.1\\FlexiconnectorsApi_v2.1\\FlexiconnectorsApi\\Controllers\\PipelineController.cs",
+              "RelativeToolTip": "Controllers\\PipelineController.cs",
+              "ViewState": "AgIAAP8GAAAAAAAAAAAgwAkHAAA+AAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-10T06:00:07.06Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

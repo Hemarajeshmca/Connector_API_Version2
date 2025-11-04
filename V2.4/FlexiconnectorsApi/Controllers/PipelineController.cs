@@ -1,0 +1,9994 @@
+﻿using ClosedXML.Excel;
+using CsvHelper;
+using CsvHelper.Configuration;
+using iTextSharp.text;
+using iTextSharp.text.pdf;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Graph.Models;
+using Microsoft.Graph.Models.Security;
+using MySql.Data.MySqlClient;
+using MysqlEfCoreDemo.Data;
+using MysqlEfCoreDemo.Models;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using Npgsql;
+using NPOI.HSSF.UserModel;
+using NPOI.SS.UserModel;
+using NPOI.XSSF.UserModel;
+using SQLitePCL;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.OleDb;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using static MysqlEfCoreDemo.Data.UserInfoModel;
+using static MysqlEfCoreDemo.Models.DatasetModel;
+using DataSet = System.Data.DataSet;
+using Match = System.Text.RegularExpressions.Match;
+
+namespace MysqlEfCoreDemo.Controllers
+{
+    public class PipelineController : ControllerBase
+    {
+        private readonly IConfiguration _configuration;
+        private readonly MyDbContext dbContext;
+        DatasetController dsc;
+        List<IDbDataParameter>? parameters;
+        DataSet ds = new DataSet();
+        PipelineData objDS = new PipelineData();
+
+        #region Global variables
+        string conn = "";
+        string trg_hstname = "";
+        string trg_dbname = "";
+        string trg_username = "";
+        string trg_password = "";
+        string csvfilePath = "";
+        string targetconnectionString = "";
+        string errorlogfilePath = ""; //"D:\\Mohan\\error_log.txt";
+        string dbtype = "";
+        string errormsg = "";
+        string uploadfilepath = "";
+        string clonefilepath = "";
+        int sched_gid = 0;
+        string strtodate_format;
+        string strtodatetime_format;
+        string src_filename = "";
+        string v_filepath = ""; //"D:\\Mohan\\ExcelScheduler\\";
+        string comp_file_path = "";
+        string hostingfor = "";
+        string _slash = "";
+        string lineterm = "\r\n";
+        string initiated_by = "";
+        string ppl_code = "";
+        string column_separator;
+        string msg = "";
+        int out_result = 0;
+        string constring = "";
+        private readonly string[] midnightPatterns;
+        #endregion
+
+        public PipelineController(MyDbContext dbContext, IConfiguration configuration)
+        {
+            _configuration = configuration;
+            midnightPatterns = configuration.GetSection("TimePatterns:Midnight").Get<string[]>();
+
+            hostingfor = _configuration["HostingFor"];// _configuration.GetConnectionString("HostingFor");
+            if (hostingfor.Trim() == "Linux")
+            {
+                _slash = "/";
+                lineterm = "\n";
+            }
+            else
+            {
+                _slash = "\\";
+            }
+            targetconnectionString = _configuration.GetConnectionString("targetMysql");
+            conn = _configuration["conn"];
+            trg_hstname = _configuration["trg_hstname"];
+            trg_dbname = _configuration["trg_dbname"];
+            trg_username = _configuration["trg_username"];
+            trg_password = _configuration["trg_password"];
+            csvfilePath = System.IO.Path.Combine(Directory.GetCurrentDirectory(), "Processing") + _slash; //+ "Processing.csv"; //_configuration["csvfilePath"]; //WINDOWS Server
+            uploadfilepath = System.IO.Path.Combine(Directory.GetCurrentDirectory(), "RawFiles") + _slash; //_configuration["uploadfilepath"];
+            clonefilepath = _configuration["clonefilepath"];//System.IO.Path.Combine(Directory.GetCurrentDirectory(), "Uploads") + _slash; //_configuration["clonefilepath"];
+            v_filepath = System.IO.Path.Combine(Directory.GetCurrentDirectory(), "ExcelScheduler") + _slash; //"D:\\Mohan\\ExcelScheduler\\";
+            errorlogfilePath = System.IO.Path.Combine(Directory.GetCurrentDirectory(), "Errorlog", "error_log.txt");
+            comp_file_path = System.IO.Path.Combine(Directory.GetCurrentDirectory(), "CompletedFiles") + _slash; //"D:\\Mohan\\CompletedFiles\\";
+            dbtype = _configuration["trgdbtype"];
+            strtodate_format = _configuration["str_to_date_format"];
+            strtodatetime_format = _configuration["str_to_datetime_format"];
+            this.dbContext = dbContext;
+
+        }
+
+        // Implement IDisposable interface
+        public void Dispose()
+        {
+            dbContext.Dispose();
+        }
+
+        #region Pipeline Header
+        [HttpGet]
+        public async Task<IActionResult> GetPipelines(string runtype, string pipeline_status)
+        {
+            using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+            {
+
+                if (connect.State != ConnectionState.Open)
+                    connect.Open();
+
+                try
+                {
+                    using (MySqlCommand command = new MySqlCommand("pr_con_get_pipelinelist", connect))
+                    {
+                        command.CommandType = CommandType.StoredProcedure;
+                        command.Parameters.AddWithValue("in_runtype", runtype);
+                        command.Parameters.AddWithValue("in_pipeline_status", pipeline_status);
+
+                        using (MySqlDataReader reader = command.ExecuteReader())
+                        {
+                            List<PipelineListModel> pipelines = new List<PipelineListModel>();
+
+                            while (await reader.ReadAsync())
+                            {
+                                pipelines.Add(new PipelineListModel
+                                {
+                                    pipeline_code = reader["pipeline_code"]?.ToString(),
+                                    pipeline_gid = reader["pipeline_gid"] != DBNull.Value ? Convert.ToInt32(reader["pipeline_gid"]) : 0,
+                                    pipeline_name = reader["pipeline_name"]?.ToString(),
+                                    connection_code = reader["connection_code"]?.ToString(),
+                                    db_name = reader["db_name"]?.ToString(),
+                                    table_view_query_type = reader["table_view_query_type"]?.ToString(),
+                                    target_dataset_code = reader["target_dataset_code"]?.ToString(),
+                                    table_view_query_desc = reader["table_view_query_desc"]?.ToString(),
+                                    delete_flag = reader["delete_flag"]?.ToString(),
+                                    created_date = reader["created_date"] != DBNull.Value ? Convert.ToDateTime(reader["created_date"]) : null,
+                                    created_by = reader["created_by"]?.ToString(),
+                                    updated_date = reader["updated_date"] != DBNull.Value ? Convert.ToDateTime(reader["updated_date"]) : null,
+                                    updated_by = reader["updated_by"]?.ToString(),
+                                    pipeline_status = reader["pipeline_status"]?.ToString(),
+                                    dataset_name = reader["dataset_name"]?.ToString(),
+                                    table_name = reader["table_name"]?.ToString(),
+                                    run_type = reader["run_type"]?.ToString(),
+                                    upload_mode = reader["upload_mode"]?.ToString(),
+                                    pull_days = reader["pull_days"] != DBNull.Value ? Convert.ToInt32(reader["pull_days"]) : null,
+                                    PplFieldNames = reader["PplFieldNames"]?.ToString(),
+                                    default_value = reader["default_value"]?.ToString(),
+                                    source_file_name = reader["source_file_name"]?.ToString(),
+                                    source_db_type = reader["source_db_type"]?.ToString(),
+                                    connector_name = reader["connector_name"]?.ToString(),
+                                    dataset_count = reader["dataset_count"]?.ToString(),
+                                });
+                            }
+
+                            return Ok(pipelines);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return BadRequest(new { error = ex.Message });
+                }
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetPipelines_old(string runtype, string pipeline_status)
+        {
+            try
+            {
+
+                var result = await dbContext.con_mst_tpipeline
+                        .GroupJoin(
+                            dbContext.con_mst_tdataset,
+                            a => a.target_dataset_code,
+                            b => b.dataset_code,
+                            (a, bGroup) => new { EntityA = a, EntityBGroup = bGroup }
+                        )
+                        .SelectMany(
+                            ab => ab.EntityBGroup.DefaultIfEmpty(),
+                            (ab, b) => new { ab.EntityA, EntityB = b }
+                        )
+                        .GroupJoin(
+                            dbContext.con_trn_tpplfieldmapping,
+                            ab => ab.EntityA.pipeline_code,
+                            c => c.pipeline_code,
+                            (ab, cGroup) => new { ab.EntityA, ab.EntityB, EntityCGroup = cGroup }
+                        )
+                        .SelectMany(
+                            abc => abc.EntityCGroup.DefaultIfEmpty(),
+                            (abc, c) => new
+                            {
+                                EntityA = abc.EntityA,
+                                EntityB = abc.EntityB,
+                                EntityC = c
+                            }
+                        )
+                        .GroupJoin(
+                            dbContext.con_trn_tpplcondition,
+                            abc => abc.EntityA.pipeline_code,
+                            d => d.pipeline_code,
+                            (abc, dGroup) => new { abc.EntityA, abc.EntityB, abc.EntityC, EntityDGroup = dGroup }
+                        )
+                        .SelectMany(
+                            abcd => abcd.EntityDGroup.DefaultIfEmpty(),
+                            (abcd, d) => new
+                            {
+                                EntityA = abcd.EntityA,
+                                EntityB = abcd.EntityB,
+                                EntityC = abcd.EntityC,
+                                EntityD = d
+                            }
+                        )
+                        .GroupJoin(
+                            dbContext.con_trn_tpplfinalization,
+                            abcd => abcd.EntityA.pipeline_code,
+                            e => e.pipeline_code,
+                            (abcd, eGroup) => new { abcd.EntityA, abcd.EntityB, abcd.EntityC, abcd.EntityD, EntityEGroup = eGroup }
+                        )
+                        .SelectMany(
+                            abcde => abcde.EntityEGroup.DefaultIfEmpty(),
+                            (abcde, e) => new
+                            {
+                                EntityA = abcde.EntityA,
+                                EntityB = abcde.EntityB,
+                                EntityC = abcde.EntityC,
+                                EntityD = abcde.EntityD,
+                                EntityE = e
+                            }
+                        )
+                        .Join(
+                            dbContext.con_mst_tconnection,
+                            abcde => abcde.EntityA.connection_code,
+                            conn => conn.connection_code,
+                            (abcde, conn) => new
+                            {
+                                EntityA = abcde.EntityA,
+                                EntityB = abcde.EntityB,
+                                EntityC = abcde.EntityC,
+                                EntityD = abcde.EntityD,
+                                EntityE = abcde.EntityE,
+                                Connection = conn
+                            }
+                        )
+                        .Select(result => new
+                        {
+                            result.EntityA.pipeline_gid,
+                            result.EntityA.pipeline_code,
+                            result.EntityA.pipeline_name,
+                            result.EntityA.connection_code,
+                            result.EntityA.db_name,
+                            result.EntityA.table_view_query_type,
+                            result.EntityA.table_view_query_desc,
+                            result.EntityA.target_dataset_code,
+                            result.EntityA.delete_flag,
+                            result.EntityA.created_date,
+                            result.EntityA.created_by,
+                            result.EntityA.updated_date,
+                            result.EntityA.updated_by,
+                            result.EntityA.pipeline_status,
+                            result.EntityB.dataset_name,
+                            result.EntityB.table_name,
+                            result.EntityE.run_type,
+                            result.EntityE.upload_mode,
+                            //result.EntityE.updated_time_stamp,
+                            result.EntityE.pull_days,
+                            result.EntityC.ppl_field_name,
+                            result.EntityC.default_value,
+                            result.EntityA.source_file_name,
+                            result.Connection, // include connection information
+                        })
+                        .GroupBy(item => item.pipeline_code) // Group by pipeline_code
+                      .Select(group => new
+                      {
+                          pipeline_code = group.Key,
+
+                          pipeline_gid = group.Select(item => item.pipeline_gid).FirstOrDefault(),
+                          pipeline_name = group.Select(item => item.pipeline_name).FirstOrDefault(),
+                          connection_code = group.Select(item => item.connection_code).FirstOrDefault(),
+                          db_name = group.Select(item => item.db_name).FirstOrDefault(),
+                          table_view_query_type = group.Select(item => item.table_view_query_type).FirstOrDefault(),
+                          target_dataset_code = group.Select(item => item.target_dataset_code).FirstOrDefault(),
+                          table_view_query_desc = group.Select(item => item.table_view_query_desc).FirstOrDefault(),
+                          delete_flag = group.Select(item => item.delete_flag).FirstOrDefault(),
+                          created_date = group.Select(item => item.created_date).FirstOrDefault(),
+                          created_by = group.Select(item => item.created_by).FirstOrDefault(),
+                          updated_date = group.Select(item => item.updated_date).FirstOrDefault(),
+                          updated_by = group.Select(item => item.updated_by).FirstOrDefault(),
+                          pipeline_status = group.Select(item => item.pipeline_status).FirstOrDefault(),
+                          table_name = group.Select(item => item.table_name).FirstOrDefault(),
+                          dataset_name = group.Select(item => item.dataset_name).FirstOrDefault(),
+                          PplFieldNames = string.Join(", ", group.Select(item => item.ppl_field_name).Where(fieldName => fieldName != null)),
+                          //key_field = group.Select(item => item.key_field).FirstOrDefault(),
+                          default_value = string.Join(", ", group.Select(item => item.default_value).Where(defaultValue => defaultValue != null)),
+                          run_type = group.Select(item => item.run_type).FirstOrDefault(),
+                          source_file_name = group.Select(item => item.source_file_name).FirstOrDefault(),
+                          upload_mode = group.Select(item => item.upload_mode).FirstOrDefault(),
+                          //updated_time_stamp = group.Select(item => item.updated_time_stamp).FirstOrDefault(),
+                          pull_days = group.Select(item => item.pull_days).FirstOrDefault(),
+                          source_db_type = group.Select(item => item.Connection.source_db_type).FirstOrDefault(),
+                          connector_name = group.Select(item => item.Connection.connection_name).FirstOrDefault()
+                      })
+                      .Where(item => (string.IsNullOrEmpty(runtype) || item.run_type == runtype) && (string.IsNullOrEmpty(pipeline_status) || item.pipeline_status == pipeline_status) && item.delete_flag == "N")
+                      .OrderByDescending(item => item.pipeline_gid)
+                      .ToListAsync();
+
+                return Ok(result);
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetPipeline_old(int id)
+        {
+
+            var pipeline = await dbContext.con_mst_tpipeline.FindAsync(id);
+
+            try
+            {
+                if (pipeline == null)
+
+                {
+                    return NotFound("Not Found");
+                }
+                return Ok(pipeline);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetPipeline(int id)
+        {
+
+            var pipeline = await dbContext.con_mst_tpipeline.FindAsync(id);
+
+            try
+            {
+                if (pipeline == null)
+
+                {
+                    return NotFound("Not Found");
+                }
+
+                var pipelineCode = pipeline.pipeline_code;
+
+                bool haveActiveDataset = await dbContext.con_trn_tpipelinedetails
+                .AnyAsync(x => x.pipeline_code == pipelineCode && x.pipelinedet_status != "Inactive");
+
+                return Ok(new
+                {
+                    pipeline_gid = pipeline.pipeline_gid,
+                    pipeline_code = pipeline.pipeline_code,
+                    pipeline_name = pipeline.pipeline_name,
+                    pipeline_desc = pipeline.pipeline_desc,
+                    connection_code = pipeline.connection_code,
+                    db_name = pipeline.db_name,
+                    source_file_name = pipeline.source_file_name,
+                    //macro_file_name = pipeline.macro_file_name,
+                    sheet_name = pipeline.sheet_name,
+                    table_view_query_type = pipeline.table_view_query_type,
+                    table_view_query_desc = pipeline.table_view_query_desc,
+                    target_dataset_code = pipeline.target_dataset_code,
+                    pipeline_status = pipeline.pipeline_status,
+                    created_date = pipeline.created_date,
+                    created_by = pipeline.created_by,
+                    updated_date = pipeline.updated_date,
+                    updated_by = pipeline.updated_by,
+                    haveActiveDataset = haveActiveDataset
+                });
+
+                //return Ok(pipeline);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+
+        [HttpGet]
+        public IActionResult GetConnectorsForDropdown()
+        {
+            try
+            {
+                var Lovconn = dbContext.con_mst_tconnection
+                .Where(p => p.connection_status == "Active")
+                .Select(c => new ConnectionDto
+                {
+                    Id = c.connection_code,
+                    Name = c.connection_name
+                })
+                .ToList();
+
+                return Ok(Lovconn);
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+        [HttpGet]
+        public async Task<IActionResult> GetSourcedbType(string connection_code)
+        {
+            try
+            {
+                var res = dbContext.con_mst_tconnection
+                   .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+                   .Select(p => new ConnectionModel
+                   {
+                       source_db_type = p.source_db_type,
+                   })
+                   .SingleOrDefault();
+
+                return Ok(res);
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<string> GetSourcedbType_pplcode(string pipeline_code)
+        {
+            string src_dbtype = "";
+            try
+            {
+                var ppl = dbContext.con_mst_tpipeline
+                   .Where(p => p.pipeline_code == pipeline_code && p.delete_flag == "N")
+                   .Select(p => new ConnectionModel
+                   {
+                       connection_code = p.connection_code,
+                   })
+                   .SingleOrDefault();
+
+                var res = dbContext.con_mst_tconnection
+                   .Where(p => p.connection_code == ppl.connection_code && p.delete_flag == "N")
+                   .Select(p => new ConnectionModel
+                   {
+                       source_db_type = p.source_db_type,
+                   })
+                   .SingleOrDefault();
+
+                src_dbtype = res.source_db_type;
+                return src_dbtype;
+
+            }
+            catch (Exception ex)
+            {
+                src_dbtype = $"Error: {ex.Message}";
+                return src_dbtype;
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetDatabaseNames(string connection_code)
+        {
+            var connector = dbContext.con_mst_tconnection
+                 .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+                 .Select(p => new ConnectionModel
+                 {
+                     source_host_name = p.source_host_name,
+                     source_port = p.source_port,
+                     source_db_user = p.source_db_user,
+                     source_db_pwd = p.source_db_pwd,
+                     source_db_type = p.source_db_type,
+                 })
+                 .SingleOrDefault();
+            try
+            {
+                if (connector == null)
+                {
+                    return NotFound("No Data found");
+                }
+                var connstring = "";
+                List<DatabaseInfo> databaseNames = new List<DatabaseInfo>();
+
+                if (connector.source_db_type == "MySql")
+                {
+                    connstring = "server=" + connector.source_host_name + "; uid=" +
+                                connector.source_db_user + "; pwd=" + connector.source_db_pwd + ";";
+                    using (MySqlConnection connection = new MySqlConnection(connstring))
+                    {
+                        connection.Open();
+
+                        MySqlCommand command = connection.CreateCommand();
+                        command.CommandText = "SHOW DATABASES";
+                        using (MySqlDataReader reader = command.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                string databaseName = reader.GetString(0);
+                                if (!IsSystemDatabase(databaseName))
+                                {
+                                    databaseNames.Add(new DatabaseInfo { Name = databaseName });
+                                }
+                            }
+                        }
+                        connection.Close();
+                    }
+                }
+
+                else if (connector.source_db_type == "Postgres")
+                {
+                    connstring = "Host=" + connector.source_host_name + "; Database=postgres; Username=" +
+                                  connector.source_db_user + "; Password=" + connector.source_db_pwd + ";";
+
+                    using (NpgsqlConnection connection = new NpgsqlConnection(connstring))
+                    {
+                        connection.Open();
+                        NpgsqlCommand command = connection.CreateCommand();
+                        command.CommandText = "SELECT datname as DATABASES FROM pg_database;";
+                        using (NpgsqlDataReader reader = command.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                string databaseName = reader.GetString(0);
+                                if (!IsSystemDatabase(databaseName))
+                                {
+                                    databaseNames.Add(new DatabaseInfo { Name = databaseName });
+                                }
+                            }
+                        }
+                        connection.Close();
+                    }
+                }
+
+                return Ok(databaseNames);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public List<DatabaseInfo> GetExcelSheetNames(string filePath, string password)
+        {
+            List<DatabaseInfo> sheetNames = new List<DatabaseInfo>();
+
+            try
+            {
+                using (var workbook = new XLWorkbook(filePath))
+                {
+                    foreach (var sheet in workbook.Worksheets)
+                    {
+                        // Assuming you want to skip certain sheets like "Print_Area"
+                        if (!sheet.Name.EndsWith("Print_Area"))
+                        {
+                            sheetNames.Add(new DatabaseInfo { Name = sheet.Name });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
+
+            return sheetNames;
+        }
+
+        [HttpGet]
+        public List<DatabaseInfo> GetExcelSheetNames_OLEDB(string filePath, string password)
+        {
+            List<DatabaseInfo> sheetNames = new List<DatabaseInfo>();
+            string[] lastIndex = filePath.Split(".");
+            string fileExtension = lastIndex[1];
+
+            try
+            {
+                string connectionString = "";// @"Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" + @filePath + ";Extended Properties='Excel 12.0;HDR=YES;'";
+
+                if (fileExtension == "xls")
+                {
+                    connectionString = "Provider=Microsoft.Jet.OLEDB.4.0;Data Source=" + filePath + ";Extended Properties=\"Excel 8.0;HDR=Yes;IMEX=1\"";
+                }
+                else if (fileExtension == "xlsx")
+                {
+                    connectionString = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" + filePath + ";Extended Properties=\"Excel 12.0;HDR=Yes;IMEX=1\"";
+                }
+
+
+                using (OleDbConnection connection = new OleDbConnection(connectionString))
+                {
+                    connection.Open();
+                    DataTable schema = connection.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, null);
+
+                    if (schema != null)
+                    {
+                        foreach (DataRow row in schema.Rows)
+                        {
+                            string sheetName = row["TABLE_NAME"].ToString();
+
+                            if (sheetName.EndsWith("$") && !sheetName.EndsWith("Print_Area$"))
+                            {
+                                // Trim and clean up the sheet name
+                                sheetName = sheetName.Trim('\'', '$');
+
+                                // Create a new DatabaseInfo object and add it to the list
+                                sheetNames.Add(new DatabaseInfo { Name = sheetName });
+                            }
+                        }
+                    }
+                    //connection.Close();
+                    //connection.Dispose();
+
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+
+                //logger.Error("Step 5 : " + ex.Message);
+            }
+
+            return sheetNames;
+        }
+
+        [HttpGet]
+        public async Task<List<DatabaseInfo>> ReadFirstRowFromExcel(string pipelinecode, string filePath, string sheetName, string user_code, string datasetcode = "", string datasetinsert = "No")
+        {
+            List<DatabaseInfo> Excelsrcfieldname = new List<DatabaseInfo>();
+            DatasetData dsc = new DatasetData();
+
+            try
+            {
+                string fileExtension = System.IO.Path.GetExtension(filePath);
+                AddpplSourceFieldRequest objsrcfld = new AddpplSourceFieldRequest();
+                var pplsrcFieldsToDelete = await dbContext.con_trn_tpplsourcefield
+                .Where(p => p.pipeline_code == pipelinecode
+                            && p.dataset_code == datasetcode)
+                .ToListAsync();
+
+                if (pplsrcFieldsToDelete.Any())
+                {
+                    dbContext.con_trn_tpplsourcefield.RemoveRange(pplsrcFieldsToDelete);
+                    await dbContext.SaveChangesAsync();
+                }
+
+                int i = 1;
+
+                if (string.Equals(fileExtension, ".xls", StringComparison.OrdinalIgnoreCase))
+                {
+                    using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+                    {
+                        IWorkbook workbook = new HSSFWorkbook(fileStream);
+                        ISheet worksheet = workbook.GetSheet(sheetName);
+
+                        if (worksheet != null)
+                        {
+                            IRow row = worksheet.GetRow(0);
+
+                            if (row != null)
+                            {
+                                foreach (ICell cell in row.Cells)
+                                {
+                                    Excelsrcfieldname.Add(new DatabaseInfo { Name = cell.StringCellValue.Trim() });
+
+                                    var pplsrcfld = new PipelineSourcefield()
+                                    {
+                                        pplsourcefield_gid = 0,
+                                        pipeline_code = pipelinecode,
+                                        dataset_code = datasetcode,
+                                        sourcefield_name = cell.StringCellValue.Trim(),
+                                        sourcefield_sno = i,
+                                        dataset_table_field = "col" + i,
+                                        expressionfield_json = null,
+                                        sourcefieldmapping_flag = "N",
+                                        source_type = "Excel",
+                                        sourcefield_format = "",
+                                        created_by = user_code,
+                                        created_date = DateTime.Now,
+                                        delete_flag = "N"
+                                    };
+                                    dbContext.con_trn_tpplsourcefield.Add(pplsrcfld);
+
+                                    if (datasetinsert == "Yes")
+                                    {
+                                        /* DataSet Field Save*/
+                                        Datasetdetailmodel Datasetdetailmodel = new Datasetdetailmodel();
+                                        Datasetdetailmodel.field_name = cell.StringCellValue.Trim();
+                                        Datasetdetailmodel.datasetCode = datasetcode;
+                                        Datasetdetailmodel.field_type = "TEXT";
+                                        Datasetdetailmodel.field_length = "255";
+                                        Datasetdetailmodel.datasetdetail_id = 0;
+                                        Datasetdetailmodel.precision_length = 0;
+                                        Datasetdetailmodel.scale_length = 0;
+                                        Datasetdetailmodel.field_mandatory = "N";
+                                        Datasetdetailmodel.in_action = "INSERT";
+                                        Datasetdetailmodel.dataset_seqno = i;
+                                        constring = _configuration.GetSection("ConnectionStrings")["Mysql"].ToString();
+                                        headerValue header_value = new headerValue();
+                                        var getvalue = user_code;
+                                        var getlangCode = Request.Headers.TryGetValue("lang_code", out var lang_code) ? lang_code.First() : "";
+                                        var getRoleCode = Request.Headers.TryGetValue("role_code", out var role_code) ? role_code.First() : "";
+                                        header_value.user_code = getvalue;
+                                        header_value.lang_code = getlangCode;
+                                        header_value.role_code = getRoleCode;
+
+                                        var serializedProduct = dsc.DatasetDetaildata(Datasetdetailmodel, header_value, constring);
+                                    }
+
+                                    i++;
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (string.Equals(fileExtension, ".xlsx", StringComparison.OrdinalIgnoreCase))
+                {
+                    using (var workbook = new XLWorkbook(filePath))
+                    {
+                        var worksheet = workbook.Worksheet(sheetName);
+
+                        if (worksheet != null)
+                        {
+                            // Assuming you want to read data from the first row (row 1)
+                            var row = worksheet.Row(1).Cells(1, worksheet.LastColumnUsed().ColumnNumber());
+
+                            // Loop through the cells in the row
+                            foreach (var cell in row)
+                            {
+                                Excelsrcfieldname.Add(new DatabaseInfo { Name = cell.GetValue<string>()?.Trim() });
+                                var pplsrcfld = new PipelineSourcefield()
+                                {
+                                    pplsourcefield_gid = 0,
+                                    pipeline_code = pipelinecode,
+                                    dataset_code = datasetcode,
+                                    sourcefield_name = cell.GetValue<string>()?.Trim(),
+                                    sourcefield_sno = i,
+                                    dataset_table_field = "col" + i,
+                                    expressionfield_json = null,
+                                    sourcefieldmapping_flag = "N",
+                                    source_type = "Excel",
+                                    sourcefield_format = "",
+                                    created_by = user_code,
+                                    created_date = DateTime.Now,
+                                    delete_flag = "N"
+                                };
+                                dbContext.con_trn_tpplsourcefield.Add(pplsrcfld);
+
+                                if (datasetinsert == "Yes")
+                                {
+                                    /* DataSet Field Save*/
+                                    Datasetdetailmodel Datasetdetailmodel = new Datasetdetailmodel();
+                                    Datasetdetailmodel.field_name = cell.GetValue<string>()?.Trim();
+                                    Datasetdetailmodel.datasetCode = datasetcode;
+                                    Datasetdetailmodel.field_type = "TEXT";
+                                    Datasetdetailmodel.field_length = "255";
+                                    Datasetdetailmodel.datasetdetail_id = 0;
+                                    Datasetdetailmodel.precision_length = 0;
+                                    Datasetdetailmodel.scale_length = 0;
+                                    Datasetdetailmodel.field_mandatory = "N";
+                                    Datasetdetailmodel.in_action = "INSERT";
+                                    Datasetdetailmodel.dataset_seqno = i;
+
+                                    constring = _configuration.GetSection("ConnectionStrings")["Mysql"].ToString();
+                                    headerValue header_value = new headerValue();
+                                    var getvalue = user_code;
+                                    var getlangCode = Request.Headers.TryGetValue("lang_code", out var lang_code) ? lang_code.First() : "";
+                                    var getRoleCode = Request.Headers.TryGetValue("role_code", out var role_code) ? role_code.First() : "";
+                                    header_value.user_code = getvalue;
+                                    header_value.lang_code = getlangCode;
+                                    header_value.role_code = getRoleCode;
+
+                                    var serializedProduct = dsc.DatasetDetaildata(Datasetdetailmodel, header_value, constring);
+                                }
+                                i++;
+                            }
+                        }
+                    }
+                }
+
+                await dbContext.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                // Handle any exceptions here.
+                Console.WriteLine("Error: " + ex.Message);
+            }
+            return Excelsrcfieldname;
+        }
+
+        [HttpGet]
+        public async Task<List<DatabaseInfo>> ReadTablecolFromSource(string connection_code, string pipelinecode,
+            string databasename, string sourcetable, string tvq_type, string user_code, string dataset_code, string datasetInsert)
+        {
+            List<DatabaseInfo> srcfieldname = new List<DatabaseInfo>();
+            DatasetData dsc = new DatasetData();
+
+            try
+            {
+                // Delete the previous source field against pipelinecode
+                var pplsrcFieldsToDelete = await dbContext.con_trn_tpplsourcefield
+                .Where(p => p.pipeline_code == pipelinecode
+                            && p.dataset_code == dataset_code)
+                .ToListAsync();
+
+                if (pplsrcFieldsToDelete.Any())
+                {
+                    dbContext.con_trn_tpplsourcefield.RemoveRange(pplsrcFieldsToDelete);
+                    await dbContext.SaveChangesAsync();
+                }
+
+
+                var connector = dbContext.con_mst_tconnection
+               .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+               .Select(p => new ConnectionModel
+               {
+                   source_host_name = p.source_host_name,
+                   source_port = p.source_port,
+                   source_db_user = p.source_db_user,
+                   source_db_pwd = p.source_db_pwd
+               })
+               .SingleOrDefault();
+
+                var src_connstring = "server=" + connector.source_host_name + "; uid=" +
+                                  connector.source_db_user + "; pwd=" + connector.source_db_pwd + ";";
+
+                List<string> srclist = new List<string>();
+
+                //Source connection establish
+                using (MySqlConnection connection = new MySqlConnection(src_connstring))
+                {
+                    connection.Open();
+
+                    MySqlCommand command = connection.CreateCommand();
+                    command.CommandText = "SELECT COLUMN_NAME FROM information_schema.COLUMNS " +
+                                          "WHERE TABLE_SCHEMA = '" + databasename + "' and TABLE_NAME = '" +
+                                           sourcetable + "';";
+
+                    int i = 1;
+                    using (MySqlDataReader reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            srcfieldname.Add(new DatabaseInfo { Name = reader.GetString(0) });
+                            var pplsrcfld = new PipelineSourcefield()
+                            {
+                                pplsourcefield_gid = 0,
+                                pipeline_code = pipelinecode,
+                                dataset_code = dataset_code,
+                                sourcefield_name = reader.GetString(0),
+                                sourcefield_sno = i,
+                                dataset_table_field = "",//"col" + i,
+                                expressionfield_json = null,
+                                sourcefieldmapping_flag = "N",
+                                source_type = tvq_type,
+                                sourcefield_format = "",
+                                created_by = user_code,
+                                created_date = DateTime.Now,
+                                delete_flag = "N"
+                            };
+                            dbContext.con_trn_tpplsourcefield.Add(pplsrcfld);
+                            if (datasetInsert == "Yes")
+                            {
+                                /* DataSet Field Save*/
+                                Datasetdetailmodel Datasetdetailmodel = new Datasetdetailmodel();
+                                Datasetdetailmodel.field_name = reader.GetString(0);
+                                Datasetdetailmodel.datasetCode = dataset_code;
+                                Datasetdetailmodel.field_type = "TEXT";
+                                Datasetdetailmodel.field_length = "255";
+                                Datasetdetailmodel.datasetdetail_id = 0;
+                                Datasetdetailmodel.precision_length = 0;
+                                Datasetdetailmodel.scale_length = 0;
+                                Datasetdetailmodel.field_mandatory = "N";
+                                Datasetdetailmodel.in_action = "INSERT";
+                                Datasetdetailmodel.dataset_seqno = i;
+
+                                constring = _configuration.GetSection("ConnectionStrings")["Mysql"].ToString();
+                                headerValue header_value = new headerValue();
+                                var getvalue = user_code;
+                                var getlangCode = Request.Headers.TryGetValue("lang_code", out var lang_code) ? lang_code.First() : "";
+                                var getRoleCode = Request.Headers.TryGetValue("role_code", out var role_code) ? role_code.First() : "";
+                                header_value.user_code = getvalue;
+                                header_value.lang_code = getlangCode;
+                                header_value.role_code = getRoleCode;
+
+                                var serializedProduct = dsc.DatasetDetaildata(Datasetdetailmodel, header_value, constring);
+                            }
+                            i++;
+                        }
+                    }
+                    connection.Close();
+                }
+
+                // Save all changes to the database
+                await dbContext.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                // Handle any exceptions here.
+                Console.WriteLine("Error: " + ex.Message);
+            }
+            return srcfieldname;
+        }
+
+
+        [HttpGet]
+        public List<string> GetMyslcolFromSource(string connection_code, string pipelinecode,
+    string databasename, string sourcetable, string tvq_type, string user_code)
+        {
+            List<string> srclist = new List<string>();
+            try
+            {
+                var connector = dbContext.con_mst_tconnection
+                   .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+                   .Select(p => new ConnectionModel
+                   {
+                       source_host_name = p.source_host_name,
+                       source_port = p.source_port,
+                       source_db_user = p.source_db_user,
+                       source_db_pwd = p.source_db_pwd
+                   })
+                   .SingleOrDefault();
+
+                if (connector == null)
+                {
+                    Console.WriteLine("No connection found for the given connection_code.");
+                    return srclist;
+                }
+
+                var src_connstring = "server=" + connector.source_host_name +
+                                     "; uid=" + connector.source_db_user +
+                                     "; pwd=" + connector.source_db_pwd + ";";
+
+                using (MySqlConnection connection = new MySqlConnection(src_connstring))
+                {
+                    connection.Open();
+
+                    MySqlCommand command = connection.CreateCommand();
+                    command.CommandText = @"SELECT COLUMN_NAME 
+                                    FROM information_schema.COLUMNS 
+                                    WHERE TABLE_SCHEMA = @schema 
+                                      AND TABLE_NAME = @table";
+                    command.Parameters.AddWithValue("@schema", databasename);
+                    command.Parameters.AddWithValue("@table", sourcetable);
+
+                    using (MySqlDataReader reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            string columnName = reader["COLUMN_NAME"].ToString();
+                            srclist.Add(columnName);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error: " + ex.Message);
+            }
+
+            return srclist;
+        }
+
+
+        [HttpPost]
+        public bool ValidateFile_sheet([FromBody] validateexcelsheet obj)
+        {
+            var flag = false;
+            var file_extension = "";
+            try
+            {
+                file_extension = System.IO.Path.GetExtension(obj.file_Paths);
+
+                if (file_extension == ".xls" || file_extension == ".xlsx")
+                {
+                    using (var fileStream = System.IO.File.Open(obj.file_Paths, FileMode.Open, FileAccess.Read))
+                    {
+                        IWorkbook workbook;
+                        if (file_extension == ".xls")
+                        {
+                            workbook = new HSSFWorkbook(fileStream);
+                        }
+                        else // ".xlsx"
+                        {
+                            workbook = new XSSFWorkbook(fileStream);
+                        }
+
+                        ISheet sheet = workbook.GetSheet(obj.sheetName);
+                        if (sheet != null && sheet.GetRow(0) != null)
+                        {
+                            flag = true;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log the exception
+            }
+
+            return flag;
+        }
+
+        [HttpPost]
+        public bool ValidateFile_sheet_OLEDB([FromBody] validateexcelsheet obj)
+        {
+            var flag = false;
+            var file_extension = "";
+            try
+            {
+                file_extension = System.IO.Path.GetExtension(obj.file_Paths);
+
+                if (file_extension == ".xls")
+                {
+                    using (FileStream fileStream = new FileStream(obj.file_Paths, FileMode.Open, FileAccess.Read))
+                    {
+                        HSSFWorkbook workbook = new HSSFWorkbook(fileStream);
+                        HSSFSheet sheet = (HSSFSheet)workbook.GetSheet(obj.sheetName);
+                        if (sheet != null && sheet.GetRow(0) != null)
+                        {
+                            flag = true;
+                        }
+                    }
+                }
+                else if (file_extension == ".xlsx")
+                {
+                    using (FileStream fileStream = new FileStream(obj.file_Paths, FileMode.Open, FileAccess.Read))
+                    {
+                        XSSFWorkbook workbook = new XSSFWorkbook(fileStream);
+                        XSSFSheet sheet = (XSSFSheet)workbook.GetSheet(obj.sheetName);
+
+                        if (sheet != null && sheet.GetRow(0) != null)
+                        {
+                            flag = true;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return flag;
+
+            }
+
+            return flag;
+        }
+
+        [HttpGet]
+        public IActionResult GetSourceFieldDropdown(string pipeline_code, string source_type)
+        {
+            try
+            {
+                var Lovsrcfield = dbContext.con_trn_tpplsourcefield
+                .Where(p => p.pipeline_code == pipeline_code && (string.IsNullOrEmpty(source_type) || p.source_type == source_type) && p.delete_flag == "N")
+                .Select(c => new SrcExpression
+                {
+                    //Id = c.pplsourcefield_gid,
+                    //Name = c.sourcefield_name
+
+                    Id = c.sourcefield_name,
+                    Name = c.source_type == "Expression" ? "*" + c.sourcefield_name : c.sourcefield_name
+                })
+                .ToList();
+                Lovsrcfield.Insert(0, new SrcExpression { Id = "-- Select --", Name = "-- Select --" });
+
+                return Ok(Lovsrcfield);
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        private bool IsSystemDatabase(string databaseName)
+        {
+            return databaseName.Equals("information_schema", StringComparison.OrdinalIgnoreCase)
+                    || databaseName.Equals("mysql", StringComparison.OrdinalIgnoreCase)
+                    || databaseName.Equals("performance_schema", StringComparison.OrdinalIgnoreCase)
+                    || databaseName.Equals("sys", StringComparison.OrdinalIgnoreCase);
+        }
+        [HttpGet]
+        public async Task<IActionResult> GetTables(string connection_code, string databasename)
+        {
+            var connector = dbContext.con_mst_tconnection
+                 .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+                 .Select(p => new ConnectionModel
+                 {
+                     source_host_name = p.source_host_name,
+                     source_port = p.source_port,
+                     source_db_user = p.source_db_user,
+                     source_db_pwd = p.source_db_pwd,
+                     source_db_type = p.source_db_type
+                 })
+                 .SingleOrDefault();
+            try
+            {
+                if (connector == null)
+                {
+                    return NotFound("No Data found");
+                }
+                var connstring = "";
+                List<TableAndView> tableviews = new List<TableAndView>();
+
+                if (connector.source_db_type == "MySql")
+                {
+                    connstring = "server=" + connector.source_host_name + "; uid=" +
+                             connector.source_db_user + "; pwd=" + connector.source_db_pwd + ";";
+
+
+                    using (MySqlConnection connection = new MySqlConnection(connstring))
+                    {
+                        connection.Open();
+
+                        MySqlCommand command = connection.CreateCommand();
+                        command.CommandText = "SELECT TABLE_NAME FROM information_schema.TABLES " +
+                                              "WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = '" + databasename + "';";
+                        using (MySqlDataReader reader = command.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                string tableandview = reader.GetString(0);
+                                if (!IsSystemDatabase(tableandview))
+                                {
+                                    tableviews.Add(new TableAndView { Name = tableandview });
+                                }
+                            }
+                        }
+                        connection.Close();
+                    }
+                }
+                else if (connector.source_db_type == "Postgres")
+                {
+                    connstring = "Host=" + connector.source_host_name + "; Database=" + databasename + "; Username=" +
+                                  connector.source_db_user + "; Password=" + connector.source_db_pwd + ";";
+                    using (NpgsqlConnection connection = new NpgsqlConnection(connstring))
+                    {
+                        connection.Open();
+
+                        NpgsqlCommand command = connection.CreateCommand();
+                        command.CommandText = "SELECT (schemaname || '.' || tablename) as TABLE_NAME FROM pg_tables" +
+                            " where schemaname not in ('information_schema','pg_catalog') " +
+                            " and hasindexes = TRUE;";
+                        using (NpgsqlDataReader reader = command.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                string tableandview = reader.GetString(0);
+                                if (!IsSystemDatabase(tableandview))
+                                {
+                                    tableviews.Add(new TableAndView { Name = tableandview });
+                                }
+                            }
+                        }
+                        connection.Close();
+                    }
+                }
+
+
+                return Ok(tableviews);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetViews(string connection_code, string databasename)
+        {
+            var connector = dbContext.con_mst_tconnection
+                 .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+                 .Select(p => new ConnectionModel
+                 {
+                     source_host_name = p.source_host_name,
+                     source_port = p.source_port,
+                     source_db_user = p.source_db_user,
+                     source_db_pwd = p.source_db_pwd,
+                     source_db_type = p.source_db_type
+                 })
+                 .SingleOrDefault();
+            try
+            {
+                if (connector == null)
+                {
+                    return NotFound("No Data found");
+                }
+                var connstring = "";
+                List<TableAndView> tableviews = new List<TableAndView>();
+
+                if (connector.source_db_type == "MySql")
+                {
+                    connstring = "server=" + connector.source_host_name + "; uid=" +
+                             connector.source_db_user + "; pwd=" + connector.source_db_pwd + ";";
+
+
+                    using (MySqlConnection connection = new MySqlConnection(connstring))
+                    {
+                        connection.Open();
+
+                        MySqlCommand command = connection.CreateCommand();
+                        command.CommandText = "SELECT TABLE_NAME FROM information_schema.TABLES " +
+                                              "WHERE TABLE_TYPE = 'View' AND TABLE_SCHEMA = '" + databasename + "';";
+                        using (MySqlDataReader reader = command.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                string tableandview = reader.GetString(0);
+                                if (!IsSystemDatabase(tableandview))
+                                {
+                                    tableviews.Add(new TableAndView { Name = tableandview });
+                                }
+                            }
+                        }
+                        connection.Close();
+                    }
+                }
+                else if (connector.source_db_type == "Postgres")
+                {
+                    connstring = "Host=" + connector.source_host_name + "; Database=" + databasename + "; Username=" +
+                                  connector.source_db_user + "; Password=" + connector.source_db_pwd + ";";
+                    using (NpgsqlConnection connection = new NpgsqlConnection(connstring))
+                    {
+                        connection.Open();
+
+                        NpgsqlCommand command = connection.CreateCommand();
+                        command.CommandText = "SELECT (schemaname || '.' || viewname) as TABLE_NAME FROM pg_views" +
+                            " where schemaname not in ('information_schema','pg_catalog') ";
+                        using (NpgsqlDataReader reader = command.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                string tableandview = reader.GetString(0);
+                                if (!IsSystemDatabase(tableandview))
+                                {
+                                    tableviews.Add(new TableAndView { Name = tableandview });
+                                }
+                            }
+                        }
+                        connection.Close();
+                    }
+                }
+
+
+                return Ok(tableviews);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public IActionResult GetTargettable()
+        {
+            try
+            {
+                var Lovconn = dbContext.con_mst_tdataset
+                .Select(c => new TargetTable
+                {
+                    dataset_code = c.dataset_code + "-" + c.table_name,
+                    dataset_name = c.dataset_name
+                })
+                .ToList();
+
+                return Ok(Lovconn);
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public IActionResult GetFieldNames(string connection_code, string databasename, string sourcetable, string targettable)
+        {
+            var connector = dbContext.con_mst_tconnection
+                .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+                .Select(p => new ConnectionModel
+                {
+                    source_host_name = p.source_host_name,
+                    source_port = p.source_port,
+                    source_db_user = p.source_db_user,
+                    source_db_pwd = p.source_db_pwd
+                })
+                .SingleOrDefault();
+
+            try
+            {
+                if (connector == null)
+                {
+                    return NotFound("No Data found");
+                }
+
+                var src_connstring = "server=" + connector.source_host_name + "; uid=" +
+                                  connector.source_db_user + "; pwd=" + connector.source_db_pwd + ";";
+                var trg_connstring = conn;
+
+                List<string> srclist = new List<string>();
+                List<string> trglist = new List<string>();
+
+                //Source connection establish
+                using (MySqlConnection connection = new MySqlConnection(src_connstring))
+                {
+                    connection.Open();
+
+                    MySqlCommand command = connection.CreateCommand();
+                    command.CommandText = "SELECT COLUMN_NAME FROM information_schema.COLUMNS " +
+                                          "WHERE TABLE_SCHEMA = '" + databasename + "' and TABLE_NAME = '" +
+                                           sourcetable + "';";
+
+                    using (MySqlDataReader reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            srclist.Add(reader.GetString(0));
+                        }
+                    }
+                    connection.Close();
+                }
+
+                //Target connection establish
+                using (MySqlConnection connection = new MySqlConnection(trg_connstring))
+                {
+                    connection.Open();
+
+                    MySqlCommand command = connection.CreateCommand();
+                    command.CommandText = "SELECT COLUMN_NAME FROM information_schema.COLUMNS " +
+                                          "WHERE TABLE_SCHEMA = " + trg_dbname + " and TABLE_NAME = '" +
+                                           targettable + "';";
+
+                    using (MySqlDataReader reader = command.ExecuteReader())
+                    {
+
+                        while (reader.Read())
+                        {
+                            trglist.Add(reader.GetString(0));
+                        }
+                    }
+                    connection.Close();
+
+                }
+                var mergedList = (from t1 in srclist
+                                  join t2 in trglist on srclist.IndexOf(t1) equals trglist.IndexOf(t2)
+                                  select new TableFields { source_field_name = t1, target_field_name = t2 }
+                               ).ToList();
+
+                return Ok(mergedList);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public IActionResult GetSourcetblFields(string connection_code, string databasename, string sourcetable)
+        {
+            var connector = dbContext.con_mst_tconnection
+                .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+                .Select(p => new ConnectionModel
+                {
+                    source_host_name = p.source_host_name,
+                    source_port = p.source_port,
+                    source_db_user = p.source_db_user,
+                    source_db_pwd = p.source_db_pwd,
+                    source_db_type = p.source_db_type,
+                })
+                .SingleOrDefault();
+
+            try
+            {
+                if (connector == null)
+                {
+                    return NotFound("No Data found");
+                }
+
+                var src_connstring = "";
+
+                List<SourcetblFields> columnList = new List<SourcetblFields>();
+
+                if (connector.source_db_type == "MySql")
+                {
+                    src_connstring = "server=" + connector.source_host_name + "; uid=" +
+                                  connector.source_db_user + "; pwd=" + connector.source_db_pwd + ";";
+                    //Source connection establish
+                    using (MySqlConnection connection = new MySqlConnection(src_connstring))
+                    {
+                        connection.Open();
+
+                        string query = "SELECT COLUMN_NAME AS src_field_name, COLUMN_NAME AS src_field_desc " +
+                                       "FROM information_schema.COLUMNS " +
+                                       "WHERE TABLE_SCHEMA = @DatabaseName AND TABLE_NAME = @TableName";
+
+                        using (MySqlCommand command = new MySqlCommand(query, connection))
+                        {
+                            command.Parameters.AddWithValue("@DatabaseName", databasename);
+                            command.Parameters.AddWithValue("@TableName", sourcetable);
+
+                            using (MySqlDataReader reader = command.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    SourcetblFields column = new SourcetblFields
+                                    {
+                                        ID = reader.GetString("src_field_name"),
+                                        Name = reader.GetString("src_field_desc")
+                                    };
+                                    columnList.Add(column);
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (connector.source_db_type == "Postgres")
+                {
+                    src_connstring = "Host=" + connector.source_host_name + "; Database=" + databasename + "; Username=" +
+                                  connector.source_db_user + "; Password=" + connector.source_db_pwd + ";";
+                    //Source connection establish
+                    using (NpgsqlConnection connection = new NpgsqlConnection(src_connstring))
+                    {
+                        connection.Open();
+                        string[] parts = sourcetable.Split('.');
+                        databasename = parts[0];
+                        sourcetable = parts[1];
+
+                        string query = "SELECT COLUMN_NAME AS src_field_name, COLUMN_NAME AS src_field_desc " +
+                                       "FROM information_schema.COLUMNS " +
+                                       "WHERE TABLE_SCHEMA = @DatabaseName AND TABLE_NAME = @TableName";
+
+                        using (NpgsqlCommand command = new NpgsqlCommand(query, connection))
+                        {
+                            command.Parameters.AddWithValue("@DatabaseName", databasename);
+                            command.Parameters.AddWithValue("@TableName", sourcetable);
+
+                            using (NpgsqlDataReader reader = command.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    SourcetblFields column = new SourcetblFields
+                                    {
+                                        ID = reader.GetString("src_field_name"),
+                                        Name = reader.GetString("src_field_desc")
+                                    };
+                                    columnList.Add(column);
+                                }
+                            }
+                        }
+                    }
+                }
+                return Ok(columnList);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public IActionResult GetKeyFields(string connection_code, string databasename, string tablename)
+        {
+            var connector = dbContext.con_mst_tconnection
+                  .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+                  .Select(p => new ConnectionModel
+                  {
+                      source_host_name = p.source_host_name,
+                      source_port = p.source_port,
+                      source_db_user = p.source_db_user,
+                      source_db_pwd = p.source_db_pwd,
+                      source_db_type = p.source_db_type,
+                  })
+                  .SingleOrDefault();
+
+            try
+            {
+                if (connector == null)
+                {
+                    return NotFound("No Data found");
+                }
+
+                var src_connstring = "";
+
+                List<SourcetblFields> columnList = new List<SourcetblFields>();
+
+                if (connector.source_db_type == "MySql")
+                {
+                    databasename = trg_dbname;
+                    src_connstring = "server=" + connector.source_host_name + "; uid=" +
+                                  connector.source_db_user + "; pwd=" + connector.source_db_pwd + ";";
+                    //Source connection establish
+                    using (MySqlConnection connection = new MySqlConnection(src_connstring))
+                    {
+                        connection.Open();
+
+                        string query = "SELECT t.constraint_type as constraint_type,GROUP_CONCAT(k.column_name " +
+                                       "ORDER BY k.ordinal_position ASC SEPARATOR ', ') AS column_names " +
+                                       "FROM information_schema.table_constraints t JOIN information_schema.key_column_usage k " +
+                                       "USING (constraint_name, table_schema, table_name) WHERE t.constraint_type IN ('PRIMARY KEY', 'UNIQUE') " +
+                                       "AND t.table_schema = @DatabaseName AND t.table_name = @TableName GROUP BY t.constraint_type;";
+
+                        using (MySqlCommand command = new MySqlCommand(query, connection))
+                        {
+                            command.Parameters.AddWithValue("@DatabaseName", databasename);
+                            command.Parameters.AddWithValue("@TableName", tablename);
+
+                            using (MySqlDataReader reader = command.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    SourcetblFields column = new SourcetblFields
+                                    {
+                                        ID = reader.GetString("constraint_type"),
+                                        Name = reader.GetString("column_names")
+                                    };
+                                    columnList.Add(column);
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (connector.source_db_type == "Postgres")
+                {
+                    src_connstring = "Host=" + connector.source_host_name + "; Database=" + databasename + "; Username=" +
+                                  connector.source_db_user + "; Password=" + connector.source_db_pwd + ";";
+                    //Source connection establish
+                    using (NpgsqlConnection connection = new NpgsqlConnection(src_connstring))
+                    {
+                        connection.Open();
+                        string[] parts = tablename.Split('.');
+                        tablename = parts[1];
+
+                        string query = "SELECT t.constraint_type AS constraint_type," +
+                                        "STRING_AGG(k.column_name, ', ' ORDER BY k.ordinal_position) AS column_names " +
+                                        "FROM information_schema.table_constraints t " +
+                                        "JOIN information_schema.key_column_usage k ON " +
+                                        "t.constraint_name = k.constraint_name AND t.table_schema = k.table_schema " +
+                                        "AND t.table_name = k.table_name " +
+                                        "WHERE t.constraint_type IN('PRIMARY KEY', 'UNIQUE') " +
+                                        "AND t.table_catalog = @DatabaseName AND t.table_name = @TableName " +
+                                        "GROUP BY t.constraint_type;";
+
+                        using (NpgsqlCommand command = new NpgsqlCommand(query, connection))
+                        {
+                            command.Parameters.AddWithValue("@DatabaseName", databasename);
+                            command.Parameters.AddWithValue("@TableName", tablename);
+
+                            using (NpgsqlDataReader reader = command.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    SourcetblFields column = new SourcetblFields
+                                    {
+                                        ID = reader.GetString("constraint_type"),
+                                        Name = reader.GetString("column_names")
+                                    };
+                                    columnList.Add(column);
+                                }
+                            }
+                        }
+                    }
+                }
+                return Ok(columnList);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public IActionResult GetTargetKeyFields(string tablename, string pipeline_code)
+        {
+            try
+            {
+                List<TargettblKeyfields> columnList = new List<TargettblKeyfields>();
+
+                if (dbtype == "Mysql")
+                {
+                    //target connection establish
+                    using (MySqlConnection connection = new MySqlConnection(targetconnectionString))
+                    {
+                        connection.Open();
+
+                        string query = "SELECT distinct a.dataset_field_name AS keyfield, a.dataset_field_desc AS keyfield_desc " +
+                                       "FROM con_mst_tdataset_field as a " +
+                                       "inner join con_trn_tpplfieldmapping as b " +
+                                       "on a.dataset_code = b.dataset_code and b.ppl_field_name != '-- Select --' and b.ppl_field_name != '' " +
+                                       "and a.dataset_field_name = b.dataset_field_name and b.delete_flag = 'N' " +
+                                       "WHERE a.dataset_code = '" + tablename + "' and b.pipeline_code = '" + pipeline_code + "' and a.delete_flag = 'N' ";
+
+                        using (MySqlCommand command = new MySqlCommand(query, connection))
+                        {
+                            //command.Parameters.AddWithValue("@TableName", tablename);
+                            //command.Parameters.AddWithValue("@pipeline_code", pipeline_code);
+                            using (MySqlDataReader reader = command.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    TargettblKeyfields column = new TargettblKeyfields
+                                    {
+                                        ID = reader.GetString("keyfield"),
+                                        Name = reader.GetString("keyfield_desc")
+                                    };
+                                    columnList.Add(column);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return Ok(columnList);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetTargettblFields_old(string dataset_code)
+        {
+
+            var ds_code = await dbContext.con_mst_tdataset_field
+                        .Where(a => a.dataset_code == dataset_code && a.delete_flag == "N")
+                        .Select(a => new
+                        {
+                            dataset_field_desc = a.dataset_field_desc,
+                            dataset_field_name = a.dataset_field_name
+                        })
+                        .ToListAsync();
+            try
+            {
+                if (ds_code == null)
+
+                {
+                    return NotFound("Not Found");
+                }
+                return Ok(ds_code);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> AddpplFieldMapping([FromBody] AddpplFieldMappingRequest addpplfieldmap)
+        {
+            var ds_codes = await dbContext.con_mst_tdataset_field
+                .Where(a => a.dataset_code == addpplfieldmap.dataset_code && a.delete_flag == "N"
+                && (a.active_status == "Y" || a.active_status == "D"))
+                .Select(a => new
+                {
+                    dataset_field_desc = a.dataset_field_desc,
+                    dataset_field_name = a.dataset_field_name,
+                    field_mandatory = a.field_mandatory
+                })
+                .ToListAsync();
+
+            if (ds_codes.Count == 0 && addpplfieldmap.dataset_code != "")
+            {
+                // Delete the previous Fieldmapping record against pipelinecode
+                var pplfieldMappingToDelete = await dbContext.con_trn_tpplfieldmapping
+                .Where(p => p.pipeline_code == addpplfieldmap.pipeline_code
+                            && p.dataset_code == addpplfieldmap.dataset_code
+                            && p.delete_flag == "N")
+                .ToListAsync();
+
+                if (pplfieldMappingToDelete.Any())
+                {
+                    dbContext.con_trn_tpplfieldmapping.RemoveRange(pplfieldMappingToDelete);
+                    await dbContext.SaveChangesAsync();
+                }
+
+                // Delete the previous Conditions record against pipelinecode
+                var ConditionToDelete = await dbContext.con_trn_tpplcondition
+                .Where(p => p.pipeline_code == addpplfieldmap.pipeline_code
+                            && p.dataset_code == addpplfieldmap.dataset_code
+                            && p.delete_flag == "N")
+                .ToListAsync();
+
+                if (ConditionToDelete.Any())
+                {
+                    dbContext.con_trn_tpplcondition.RemoveRange(ConditionToDelete);
+                    await dbContext.SaveChangesAsync();
+                }
+
+                // Delete the previous datasetprocessingheader record against pipelinecode
+                var DataprocessingHeaderToDelete = await dbContext.con_mst_tdataprocessingheader
+                .Where(p => p.dataprocessingheader_pipeline_code == addpplfieldmap.pipeline_code
+                            && p.dataprocessingheader_dataset_code == addpplfieldmap.dataset_code
+                            && p.delete_flag == 'N')
+                .ToListAsync();
+
+                if (DataprocessingHeaderToDelete.Any())
+                {
+                    dbContext.con_mst_tdataprocessingheader.RemoveRange(DataprocessingHeaderToDelete);
+                    await dbContext.SaveChangesAsync();
+                }
+
+                return Ok("Target dataset Fields are not available..!");
+            }
+
+            var count = dbContext.con_trn_tpplfieldmapping.Count();
+            var maxId = count > 0 ? dbContext.con_trn_tpplfieldmapping.Max(entity => entity.pplfieldmapping_gid) + 1 : 1;
+
+            try
+            {
+                // Delete the previous Fieldmapping record against pipelinecode
+                var pplfieldMappingToDelete = await dbContext.con_trn_tpplfieldmapping
+                .Where(p => p.pipeline_code == addpplfieldmap.pipeline_code
+                            && p.dataset_code == addpplfieldmap.dataset_code
+                            && p.delete_flag == "N")
+                .ToListAsync();
+
+                if (pplfieldMappingToDelete.Any())
+                {
+                    dbContext.con_trn_tpplfieldmapping.RemoveRange(pplfieldMappingToDelete);
+                    await dbContext.SaveChangesAsync();
+                }
+
+                // Delete the previous Conditions record against pipelinecode
+                var ConditionToDelete = await dbContext.con_trn_tpplcondition
+                .Where(p => p.pipeline_code == addpplfieldmap.pipeline_code
+                            && p.dataset_code == addpplfieldmap.dataset_code
+                            && p.delete_flag == "N")
+                .ToListAsync();
+
+                if (ConditionToDelete.Any())
+                {
+                    dbContext.con_trn_tpplcondition.RemoveRange(ConditionToDelete);
+                    await dbContext.SaveChangesAsync();
+                }
+
+                // Delete the previous datasetprocessingheader record against pipelinecode
+                var DataprocessingHeaderToDelete = await dbContext.con_mst_tdataprocessingheader
+                .Where(p => p.dataprocessingheader_pipeline_code == addpplfieldmap.pipeline_code
+                            && p.dataprocessingheader_dataset_code == addpplfieldmap.dataset_code
+                            && p.delete_flag == 'N')
+                .ToListAsync();
+
+                if (DataprocessingHeaderToDelete.Any())
+                {
+                    dbContext.con_mst_tdataprocessingheader.RemoveRange(DataprocessingHeaderToDelete);
+                    await dbContext.SaveChangesAsync();
+                }
+
+                // Insert in fieldmapping table
+                foreach (var ds_code in ds_codes)
+                {
+                    var pplmap = new PipelineMapping()
+                    {
+                        pplfieldmapping_gid = maxId, // Assign the same maxId for all records or generate a unique ID as needed
+                        pipeline_code = addpplfieldmap.pipeline_code,
+                        dataset_code = addpplfieldmap.dataset_code,
+                        ppl_field_name = null,
+                        pplfieldmapping_flag = (ds_code.field_mandatory == "Y") ? 1 : 0,
+                        dataset_field_name = ds_code.dataset_field_name,
+                        created_by = addpplfieldmap.created_by,
+                        created_date = DateTime.Now,
+                        delete_flag = "N"
+                    };
+
+                    await dbContext.con_trn_tpplfieldmapping.AddAsync(pplmap);
+                    maxId++; // Increment maxId for the next record
+                }
+
+                await dbContext.SaveChangesAsync();
+                return Ok("Inserted Successfully");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> UpdatepplFieldMapping([FromBody] List<UpdatepplFieldMappingRequest> updpplfieldmap)
+        {
+            //var pplcode = updpplfieldmap[0].pipeline_code;
+            var msg = "";
+            try
+            {
+                var srcmap_count = dbContext.con_trn_tpplsourcefield
+                   .Where(x =>
+                       x.sourcefieldmapping_flag == "Y" &&
+                       x.delete_flag == "N" &&
+                       x.pipeline_code == updpplfieldmap[0].pipeline_code &&
+                       x.dataset_code == updpplfieldmap[0].dataset_code
+                       )
+                   .Count();
+                int colval = srcmap_count + 1;
+
+                // Delete System (Condition Validation Record)  
+                var deleteSysRecord = await dbContext.con_trn_tpplcondition
+                .Where(p => p.pipeline_code == updpplfieldmap[0].pipeline_code && p.dataset_code == updpplfieldmap[0].dataset_code
+                 && p.sys_flag == "Y" && p.condition_type == "Validation" && p.delete_flag == "N")
+                .ToListAsync();
+
+                if (deleteSysRecord.Any())
+                {
+                    dbContext.con_trn_tpplcondition.RemoveRange(deleteSysRecord);
+                    await dbContext.SaveChangesAsync();
+                }
+
+
+                var dsfields = dbContext.con_mst_tdataset_field
+                    .Where(p => p.dataset_code == updpplfieldmap[0].dataset_code)
+                    .Select(p => new DataSetField
+                    {
+                        dataset_field_name = p.dataset_field_name,
+                        dataset_table_field = p.dataset_table_field,
+                        dataset_field_type = p.dataset_field_type,
+                        dataset_code = p.dataset_code,
+                        precision_length = p.precision_length,
+                        scale_length = p.scale_length
+                    })
+                    .ToList();
+
+                for (int i = 0; updpplfieldmap.Count > i; i++)
+                {
+                    DatasetData dsc = new DatasetData();
+                    /*DataSetField Update*/
+                    Datasetdetailmodel Datasetdetailmodel = new Datasetdetailmodel();
+                    Datasetdetailmodel.field_name = updpplfieldmap[i].field_name;
+                    Datasetdetailmodel.datasetCode = updpplfieldmap[i].dataset_code;
+                    Datasetdetailmodel.field_type = updpplfieldmap[i].field_type;
+                    Datasetdetailmodel.field_length = updpplfieldmap[i].field_length;
+                    Datasetdetailmodel.datasetdetail_id = Convert.ToInt32(updpplfieldmap[i].datasetfield_gid);
+                    Datasetdetailmodel.precision_length = Convert.ToInt32(updpplfieldmap[i].precision_length);
+                    Datasetdetailmodel.scale_length = Convert.ToInt32(updpplfieldmap[i].scale_length);
+                    Datasetdetailmodel.field_mandatory = updpplfieldmap[i].field_mandatory;
+                    Datasetdetailmodel.in_action = Convert.ToInt32(updpplfieldmap[i].datasetfield_gid) == 0 ? "INSERT" : "UPDATE";
+                    Datasetdetailmodel.dataset_seqno = Convert.ToDecimal(updpplfieldmap[i].dataset_seqno);
+
+
+                    constring = _configuration.GetSection("ConnectionStrings")["Mysql"].ToString();
+                    headerValue header_value = new headerValue();
+                    var getvalue = Request.Headers.TryGetValue("user_code", out var user_code) ? user_code.First() : "";
+                    var getlangCode = Request.Headers.TryGetValue("lang_code", out var lang_code) ? lang_code.First() : "";
+                    var getRoleCode = Request.Headers.TryGetValue("role_code", out var role_code) ? role_code.First() : "";
+                    header_value.user_code = getvalue;
+                    header_value.lang_code = getlangCode;
+                    header_value.role_code = getRoleCode;
+
+                    if (updpplfieldmap[0].its_parent_pipeline == 'Y' || Convert.ToInt32(updpplfieldmap[i].datasetfield_gid) == 0)
+                    {
+                        var serializedProduct = dsc.DatasetDetaildata(Datasetdetailmodel, header_value, constring);
+                        if (Convert.ToString(serializedProduct.Rows[0]["out_result"]) == "0")
+                        {
+                            return Ok(serializedProduct.Rows[0]["out_msg"] + "for the dataset field name (" + updpplfieldmap[i].field_name + ")");
+                        }
+                        if (Convert.ToInt32(updpplfieldmap[i].datasetfield_gid) == 0)
+                        {
+                            updpplfieldmap[i].dataset_field_name = Convert.ToString(serializedProduct.Rows[0]["out_dataset_table_field"]);//updpplfieldmap[i].dataset_seqno;
+                        }
+                    }
+                    if (updpplfieldmap[i].ppl_field_name.StartsWith("*"))
+                    {
+                        updpplfieldmap[i].ppl_field_name = updpplfieldmap[i].ppl_field_name.Substring(1);
+                    }
+
+                    int gid = Convert.ToInt32(updpplfieldmap[i].pplfieldmapping_gid);
+                    DateTime now = DateTime.Now;
+
+                    var entity = new PipelineMapping
+                    {
+                        pplfieldmapping_gid = gid, // important for update
+                        pipeline_code = updpplfieldmap[i].pipeline_code,
+                        dataset_code = updpplfieldmap[i].dataset_code,
+                        ppl_field_name = updpplfieldmap[i].field_mapped == "Y"
+                            ? updpplfieldmap[i].ppl_field_name
+                            : "-- Select --",
+                        mapped_field_name = updpplfieldmap[i].ppl_field_name,
+                        default_value = updpplfieldmap[i].default_value,
+                        pplfieldmapping_flag = updpplfieldmap[i].pplfieldmapping_flag,
+                        updated_by = updpplfieldmap[i].updated_by,
+                        updated_date = now,
+                        delete_flag = "N",
+                        dataset_field_name = updpplfieldmap[i].dataset_field_name
+                    };
+
+                    // Insert or Update
+                    if (gid == 0)
+                    {
+                        entity.created_by = updpplfieldmap[i].updated_by;
+                        entity.created_date = now;
+                        await dbContext.con_trn_tpplfieldmapping.AddAsync(entity);
+                    }
+                    else
+                    {
+                        dbContext.con_trn_tpplfieldmapping.Update(entity);
+                    }
+
+                    await dbContext.SaveChangesAsync();
+
+                    DataSetField dsfield = null;
+
+                    if (Convert.ToInt32(updpplfieldmap[i].datasetfield_gid) == 0)
+                    {
+                        dsfields = dbContext.con_mst_tdataset_field
+                        .Where(p => p.dataset_code == updpplfieldmap[i].dataset_code)
+                        //&& p.dataset_field_name == updpplfieldmap[i].dataset_field_name)
+                        .Select(p => new DataSetField
+                        {
+                            dataset_field_name = p.dataset_field_name,
+                            dataset_table_field = p.dataset_table_field,
+                            dataset_field_type = p.dataset_field_type,
+                            dataset_code = p.dataset_code,
+                            precision_length = p.precision_length,
+                            scale_length = p.scale_length
+                        })
+                        .ToList();
+                    }
+
+                    dsfield = dsfields
+                                    .FirstOrDefault(f => f.dataset_field_name == updpplfieldmap[i].dataset_field_name);
+                    if (updpplfieldmap[i].ppl_field_name != "-- Select --")
+                    {
+                        //Frame Validation Conditions for Mandatory fields 
+                        if (updpplfieldmap[i].pplfieldmapping_flag == 1 && updpplfieldmap[i].field_mapped == "Y")
+                        {
+                            string conditionText;
+                            if (dsfield.dataset_field_type == "NUMERIC" || dsfield.dataset_field_type == "INTEGER")
+                            {
+                                //17-03-2025
+                                conditionText = $"[{updpplfieldmap[i].ppl_field_name}] IS NULL ";
+                            }
+                            else
+                            {
+                                conditionText = $"([{updpplfieldmap[i].ppl_field_name}] IS NULL OR " +
+                                                $"[{updpplfieldmap[i].ppl_field_name}] = '' )";
+                            }
+
+                            if (updpplfieldmap[i].field_mapped == "Y")
+                            {
+                                var pplcon = new PipelineCondition()
+                                {
+                                    pplcondition_gid = 0,//Guid.NewGuid(),
+                                    pipeline_code = updpplfieldmap[i].pipeline_code,
+                                    dataset_code = updpplfieldmap[i].dataset_code,
+                                    condition_type = "Validation",
+                                    condition_name = updpplfieldmap[i].ppl_field_name + " Validation",
+                                    condition_text = conditionText,
+                                    condition_msg = updpplfieldmap[i].ppl_field_name + " Cannot be Blank.",
+                                    sys_flag = "Y",
+                                    created_date = DateTime.Now,
+                                    created_by = updpplfieldmap[i].updated_by,
+                                    delete_flag = "N"
+                                };
+                                await dbContext.con_trn_tpplcondition.AddAsync(pplcon);
+                                await dbContext.SaveChangesAsync();
+                            }
+                        }
+                        if (updpplfieldmap[i].field_type == "INTEGER" || updpplfieldmap[i].field_type == "NUMERIC")
+                        {
+                            if (updpplfieldmap[i].field_mapped == "Y")
+                            {
+                                var pplcon = new PipelineCondition()
+                                {
+                                    pplcondition_gid = 0,
+                                    pipeline_code = updpplfieldmap[i].pipeline_code,
+                                    dataset_code = updpplfieldmap[i].dataset_code,
+                                    condition_type = "Validation",
+                                    condition_name = updpplfieldmap[i].ppl_field_name + " Validation",
+                                    condition_text = updpplfieldmap[i].field_type == "NUMERIC" ? "([" + updpplfieldmap[i].ppl_field_name + "] IS Null or " +
+                                      "[" + updpplfieldmap[i].ppl_field_name + "] != [" + updpplfieldmap[i].ppl_field_name + "])"
+                                      : "([" + updpplfieldmap[i].ppl_field_name + "] IS Null or " +
+                                        "[" + updpplfieldmap[i].ppl_field_name + "] NOT REGEXP '^-?[0-9]+$') ",
+                                    condition_msg = updpplfieldmap[i].ppl_field_name + " must be a number.",
+                                    sys_flag = "Y",
+                                    created_date = DateTime.Now,
+                                    created_by = updpplfieldmap[i].updated_by,
+                                    delete_flag = "N"
+                                };
+                                await dbContext.con_trn_tpplcondition.AddAsync(pplcon);
+                                await dbContext.SaveChangesAsync();
+                            }
+                        }
+
+                        if ((updpplfieldmap[i].field_type == "DATE" || updpplfieldmap[i].field_type == "DATETIME") && (updpplfieldmap[i].pplsourcefield_format != ""
+                            && updpplfieldmap[i].pplsourcefield_format != "-- Select --" || updpplfieldmap[i].pplsourcefield_format != "--Select--")
+                            && updpplfieldmap[i].pplfieldmapping_flag == 1 && updpplfieldmap[i].field_mapped == "Y")
+                        {
+                            if (updpplfieldmap[i].field_mapped == "Y")
+                            {
+                                var pplcon = new PipelineCondition()
+                                {
+                                    pplcondition_gid = 0,
+                                    pipeline_code = updpplfieldmap[i].pipeline_code,
+                                    dataset_code = updpplfieldmap[i].dataset_code,
+                                    condition_type = "Validation",
+                                    condition_name = updpplfieldmap[i].ppl_field_name + " Validation",
+                                    condition_text = "([" + updpplfieldmap[i].ppl_field_name + "] IS Null)",
+                                    condition_msg = updpplfieldmap[i].ppl_field_name + " Incorrect Date Format.!",
+                                    sys_flag = "Y",
+                                    created_date = DateTime.Now,
+                                    created_by = updpplfieldmap[i].updated_by,
+                                    delete_flag = "N"
+                                };
+                                await dbContext.con_trn_tpplcondition.AddAsync(pplcon);
+                                await dbContext.SaveChangesAsync();
+                            }
+                        }
+                        var pplsrcfldgid = await dbContext.con_trn_tpplsourcefield
+                        .Where(p => p.pipeline_code == updpplfieldmap[i].pipeline_code
+                                && p.dataset_code == updpplfieldmap[i].dataset_code
+                                && p.sourcefield_name == updpplfieldmap[i].ppl_field_name
+                                && p.delete_flag == "N")
+                        .Select(a => new
+                        {
+                            pplsourcefield_gid = a.pplsourcefield_gid,
+                            dataset_table_field = a.pplsourcefield_gid > 0 ? "col" + colval : "",
+                            sourcefieldmapping_flag = a.sourcefieldmapping_flag
+                        })
+                        .ToListAsync();
+                        if (pplsrcfldgid != null && pplsrcfldgid.Count > 0)
+                        {
+                            var pplsrcfldUpdate = await dbContext.con_trn_tpplsourcefield.FindAsync(Convert.ToInt32(pplsrcfldgid[0].pplsourcefield_gid));
+                            var cast_dataset_table_field = pplsrcfldUpdate.sourcefieldmapping_flag == "N" ? "col" + colval : pplsrcfldUpdate.dataset_table_field;
+                            if (pplsrcfldUpdate != null)
+                            {
+
+                                var v_cast_dataset_table_field = "";
+                                pplsrcfldUpdate.dataset_table_field = pplsrcfldUpdate.sourcefieldmapping_flag == "N" ? "col" + colval : pplsrcfldUpdate.dataset_table_field;
+                                pplsrcfldUpdate.dataset_table_field_sno = pplsrcfldUpdate.sourcefieldmapping_flag == "N" ? colval : pplsrcfldUpdate.dataset_table_field_sno;
+                                pplsrcfldUpdate.sourcefieldmapping_flag = "Y";
+                                pplsrcfldUpdate.sourcefield_format = updpplfieldmap[i].pplsourcefield_format;
+                                pplsrcfldUpdate.dataset_code = updpplfieldmap[i].dataset_code;
+                                if (dbtype == "Mysql")
+                                {
+                                    if (dsfield.dataset_field_type == "TEXT")
+                                    {
+                                        v_cast_dataset_table_field = cast_dataset_table_field;
+                                    }
+                                    else if (dsfield.dataset_field_type == "DATE")
+                                    {
+                                        v_cast_dataset_table_field = "CAST(STR_TO_DATE(if(" + cast_dataset_table_field + "='',null," + cast_dataset_table_field + "),'#DATE_FORMAT#') AS DATE)";
+                                        // v_cast_dataset_table_field = "STR_TO_DATE(if(" + cast_dataset_table_field + "='',null," + cast_dataset_table_field + "),'#DATE_FORMAT#')";
+                                    }
+                                    else if (dsfield.dataset_field_type == "NUMERIC")
+                                    {
+                                        v_cast_dataset_table_field = "CAST(if(" + cast_dataset_table_field + "='',0," + cast_dataset_table_field + ") AS DECIMAL(" + Convert.ToString(dsfield.precision_length) + "," + Convert.ToString(dsfield.scale_length) + "))";
+                                    }
+                                    else if (dsfield.dataset_field_type == "INTEGER")
+                                    {
+                                        v_cast_dataset_table_field = "CAST(if(" + cast_dataset_table_field + "='' or " + cast_dataset_table_field + "= null " + ",0," + cast_dataset_table_field + ") AS SIGNED)";
+                                    }
+                                    else if (dsfield.dataset_field_type == "DATETIME")
+                                    {
+                                        v_cast_dataset_table_field = "STR_TO_DATE(if(" + cast_dataset_table_field + "='',null," + cast_dataset_table_field + "),'#DATETIME_FORMAT#')";
+                                    }
+                                    pplsrcfldUpdate.sourcefield_datatype = dsfield.dataset_field_type;
+                                    pplsrcfldUpdate.cast_dataset_table_field = v_cast_dataset_table_field;
+                                    pplsrcfldUpdate.updated_by = updpplfieldmap[0].updated_by;
+                                    pplsrcfldUpdate.updated_date = DateTime.Now;
+                                }
+                                colval = pplsrcfldgid[0].sourcefieldmapping_flag == "N" ? colval + 1 : colval;
+                                await dbContext.SaveChangesAsync();
+                                msg = "Record Updated Successfully";
+                            }
+                            pplsrcfldUpdate = null;
+                        }
+                    }
+                }
+                return Ok(msg);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public IActionResult SourcetoTargetPush([FromBody] SourceToTargetPushdata srctotrgpushdata)
+        {
+            var connector = dbContext.con_mst_tconnection
+                .Where(p => p.connection_code == srctotrgpushdata.connection_code && p.delete_flag == "N")
+                .Select(p => new ConnectionModel
+                {
+                    source_host_name = p.source_host_name,
+                    source_port = p.source_port,
+                    source_db_user = p.source_db_user,
+                    source_db_pwd = p.source_db_pwd,
+                    source_db_type = p.source_db_type,
+                })
+                .SingleOrDefault();
+
+            try
+            {
+                var count = 0;
+                if (connector == null)
+                {
+                    return NotFound("No Data found");
+                }
+                DataTable dt = new DataTable();
+                if (connector.source_db_type == "MySql")
+                {
+                    var conn = GetMySqlServerConnection(connector.source_host_name,
+                                                        srctotrgpushdata.databasename,
+                                                        connector.source_db_user,
+                                                        connector.source_db_pwd
+                                                        );
+                    dt = GetDataTableFromMySQLServer(conn,
+                                                     srctotrgpushdata.sourcetable,
+                                                     srctotrgpushdata.source_field_columns,
+                                                     srctotrgpushdata.defaultvalue,
+                                                     srctotrgpushdata.updated_time_stamp,
+                                                     srctotrgpushdata.pull_days);
+                    count = dt.Rows.Count;
+                    PushDataToMySQL(connector.source_db_type, dt, srctotrgpushdata.targettable, srctotrgpushdata.upload_mode, srctotrgpushdata.primary_key);
+                }
+                else if (connector.source_db_type == "Postgres")
+                {
+                    var conn = GetPostgresServerConnection(connector.source_host_name,
+                                                           srctotrgpushdata.databasename,
+                                                           connector.source_db_user,
+                                                           connector.source_db_pwd
+                                                           );
+                    dt = GetDataTableFromPostgreSQLServer(conn, srctotrgpushdata.sourcetable, srctotrgpushdata.source_field_columns, srctotrgpushdata.defaultvalue);
+                    count = dt.Rows.Count;
+                    PushDataToMySQL(connector.source_db_type, dt, srctotrgpushdata.targettable, srctotrgpushdata.upload_mode, srctotrgpushdata.primary_key);
+                }
+
+                return Ok("Totally " + count + " Data Transfered Successfully..!");
+
+            }
+            catch (Exception ex)
+            {
+                return Ok($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> AddPipeline([FromBody] AddPipelineRequest addPipelineRequest)
+        {
+            try
+            {
+                int count = dbContext.con_mst_tpipeline.Count();
+                int maxId;
+                if (count > 0)
+                {
+                    maxId = dbContext.con_mst_tpipeline.Max(entity => entity.pipeline_gid);
+                    maxId = maxId + 1;
+                }
+                else
+                {
+                    maxId = 1;
+                }
+
+                var ppl = new Pipeline()
+                {
+                    pipeline_gid = 0,
+                    pipeline_code = "PIPE_" + ((maxId.ToString()).PadLeft(4, '0')),
+                    pipeline_name = addPipelineRequest.pipeline_name,
+                    pipeline_desc = addPipelineRequest.pipeline_desc,
+                    connection_code = addPipelineRequest.connection_code,
+                    db_name = addPipelineRequest.db_name,
+                    table_view_query_type = addPipelineRequest.table_view_query_type,
+                    table_view_query_desc = addPipelineRequest.table_view_query_desc,
+                    target_dataset_code = addPipelineRequest.target_dataset_code,
+                    pipeline_status = addPipelineRequest.pipeline_status,
+                    created_date = addPipelineRequest.created_date,
+                    created_by = addPipelineRequest.created_by,
+                    updated_date = addPipelineRequest.updated_date,
+                    updated_by = addPipelineRequest.updated_by,
+                    delete_flag = "N"
+                };
+                await dbContext.con_mst_tpipeline.AddAsync(ppl);
+                await dbContext.SaveChangesAsync();
+                var lastInsertedId = ppl.pipeline_gid;
+                return Ok(lastInsertedId);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> UpdatePipeline([FromBody] UpdatePipelineRequest updatePipelineRequest)
+        {
+            var pipeline = await dbContext.con_mst_tpipeline.FindAsync(Convert.ToInt32(updatePipelineRequest.pipeline_gid));
+            try
+            {
+                if (pipeline != null)
+                {
+                    pipeline.pipeline_name = updatePipelineRequest.pipeline_name;
+                    pipeline.pipeline_desc = updatePipelineRequest.pipeline_desc;
+                    pipeline.connection_code = string.IsNullOrWhiteSpace(updatePipelineRequest.connection_code)
+                                               ? pipeline.connection_code
+                                               : updatePipelineRequest.connection_code;
+                    pipeline.db_name = string.IsNullOrWhiteSpace(updatePipelineRequest.db_name)
+                                                ? pipeline.db_name : updatePipelineRequest.db_name;
+                    pipeline.source_file_name = string.IsNullOrWhiteSpace(updatePipelineRequest.source_file_name)
+                                                ? pipeline.source_file_name
+                                                : updatePipelineRequest.source_file_name;
+                    //pipeline.macro_file_name = string.IsNullOrWhiteSpace(updatePipelineRequest.macro_file_name)
+                    //                            ? pipeline.macro_file_name
+                    //                            : updatePipelineRequest.macro_file_name;
+                    pipeline.sheet_name = string.IsNullOrWhiteSpace(updatePipelineRequest.sheet_name)
+                                                  ? pipeline.sheet_name
+                                                  : updatePipelineRequest.sheet_name;
+                    pipeline.table_view_query_type = string.IsNullOrWhiteSpace(updatePipelineRequest.table_view_query_type)
+                                                    ? pipeline.table_view_query_type : updatePipelineRequest.table_view_query_type;
+                    pipeline.table_view_query_desc = string.IsNullOrWhiteSpace(updatePipelineRequest.table_view_query_desc)
+                                                    ? pipeline.table_view_query_desc : updatePipelineRequest.table_view_query_desc;
+                    pipeline.target_dataset_code = string.IsNullOrWhiteSpace(updatePipelineRequest.target_dataset_code)
+                                                    ? pipeline.target_dataset_code : updatePipelineRequest.target_dataset_code;
+                    pipeline.updated_date = updatePipelineRequest.updated_date;
+                    pipeline.updated_by = updatePipelineRequest.updated_by;
+                    pipeline.pipeline_status = updatePipelineRequest.pipeline_status;
+                    await dbContext.SaveChangesAsync();
+                    return Ok("Record Updated Successfully");
+                }
+                return NotFound("No Records Found To Update");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> DeletePipeline([FromBody] string pipeline_code)
+        {
+            try
+            {
+                var pipelineToDelete = dbContext.con_mst_tpipeline.FirstOrDefault(p => p.pipeline_code == pipeline_code);
+                var pipelineFldmapToDelete = await dbContext.con_trn_tpplfieldmapping
+                    .Where(p => p.pipeline_code == pipeline_code)
+                    .ToListAsync();
+                var pipelineFinzToDelete = dbContext.con_trn_tpplfinalization.FirstOrDefault(p => p.pipeline_code == pipeline_code);
+
+                if (pipelineToDelete != null)
+                {
+                    pipelineToDelete.pipeline_status = "Inactive";
+                    await dbContext.SaveChangesAsync();
+                }
+                return Ok("Deleted Successfully..!");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+        #endregion
+
+        #region Pipelinesourcefield
+        [HttpPost]
+        public async Task<IActionResult> Addpplsourcefield([FromBody] AddpplSourceFieldRequest addpplsourcefld)
+        {
+            try
+            {
+
+                int count = dbContext.con_trn_tpplsourcefield.Count();
+                int maxId;
+                if (count > 0)
+                {
+                    maxId = dbContext.con_trn_tpplsourcefield.Max(entity => entity.pplsourcefield_gid);
+                    maxId = maxId + 1;
+                }
+                else
+                {
+                    maxId = 1;
+                }
+
+                var dplchk = await dbContext.con_trn_tpplsourcefield
+                   .Where(p => p.pipeline_code == addpplsourcefld.pipeline_code &&
+                   p.dataset_code == addpplsourcefld.dataset_code && p.sourcefield_name.Trim() == addpplsourcefld.sourcefield_name.Trim()
+                   && p.delete_flag == "N")
+                   .ToListAsync();
+
+                if (dplchk.Count > 0)
+                {
+                    return Ok("Duplicate Record..!");
+                }
+                else
+                {
+                    // Extract values inside square brackets
+                    string[] matches = Regex.Matches(addpplsourcefld.sourcefield_expression, @"\[([^\]]+)\]")
+                                       .Cast<Match>()
+                                       .Select(m => m.Groups[1].Value)
+                                       .ToArray();
+
+                    // Create a list of anonymous objects with the extracted values
+                    var jsonObjects = matches.Select(value => new { source_field = value }).ToList();
+
+                    var srcmap_count = dbContext.con_trn_tpplsourcefield
+                       .Where(x =>
+                           x.sourcefieldmapping_flag == "Y" &&
+                           x.delete_flag == "N" &&
+                           x.pipeline_code == addpplsourcefld.pipeline_code &&
+                           x.dataset_code == addpplsourcefld.dataset_code)
+                       .Count();
+
+                    int colval = srcmap_count + 1;
+
+                    for (int n = 0; n < matches.Count(); n++)
+                    {
+                        var src_field = matches[n];
+
+                        var recordsToUpdate = dbContext.con_trn_tpplsourcefield
+                        .Where(s => s.sourcefield_name == src_field &&
+                                    s.pipeline_code == addpplsourcefld.pipeline_code &&
+                                    s.dataset_code == addpplsourcefld.dataset_code &&
+                                    (s.dataset_table_field == "" || s.dataset_table_field == null) &&
+                                    s.delete_flag == "N")
+                        .ToList();
+
+                        foreach (var recordToUpdate in recordsToUpdate)
+                        {
+                            var v_cast_dataset_table_field = "";
+                            var v_dataset_table_field = "col" + colval;
+                            if (!string.IsNullOrEmpty(recordToUpdate.sourcefield_name))
+                            {
+
+                                if (addpplsourcefld.sourcefield_datatype == "TEXT")
+                                {
+                                    v_cast_dataset_table_field = v_dataset_table_field;
+                                }
+                                else if (addpplsourcefld.sourcefield_datatype == "DATE")
+                                {
+                                    v_cast_dataset_table_field = "CAST(STR_TO_DATE(if(" + v_dataset_table_field + "='',null," + v_dataset_table_field + "),'#DATE_FORMAT#') AS DATE)";
+                                }
+                                else if (addpplsourcefld.sourcefield_datatype == "NUMERIC")
+                                {
+                                    v_cast_dataset_table_field = "CAST(if(" + v_dataset_table_field + "='',null," + v_dataset_table_field + ") AS DECIMAL(15,2))";
+                                }
+                                else if (addpplsourcefld.sourcefield_datatype == "INTEGER")
+                                {
+                                    //17-03-2025
+                                    //v_cast_dataset_table_field = "(CAST(if(" + v_dataset_table_field + "='' or " + v_dataset_table_field + "= null " + ",0," + v_dataset_table_field + ") AS SIGNED))";
+                                    v_cast_dataset_table_field = "CAST(if(" + v_dataset_table_field + "='' ,null," + v_dataset_table_field + ") AS SIGNED)";
+                                }
+                                else if (addpplsourcefld.sourcefield_datatype == "DATETIME")
+                                {
+                                    v_cast_dataset_table_field = "STR_TO_DATE(if(" + v_dataset_table_field + "='',null," + v_dataset_table_field + "),'#DATETIME_FORMAT#')";
+                                }
+                                recordToUpdate.sourcefieldmapping_flag = "Y";
+                                recordToUpdate.dataset_table_field = "col" + colval;
+                                recordToUpdate.sourcefield_datatype = addpplsourcefld.sourcefield_datatype; //changes done on 28-01-2025 
+                                recordToUpdate.cast_dataset_table_field = v_cast_dataset_table_field;
+                                recordToUpdate.dataset_table_field_sno = colval;
+                                recordToUpdate.updated_by = addpplsourcefld.updated_by;
+                                recordToUpdate.updated_date = DateTime.Now;
+                                await dbContext.SaveChangesAsync();
+                                colval = colval + 1;
+                            }
+                        }
+                    }
+
+                    List<string> matchList = matches.ToList();
+                    // Serialize the list to a JSON string
+                    string datasetTableFieldJson = JsonConvert.SerializeObject(jsonObjects);
+                    //Insert in  sourcefield table 
+                    var pplsrcfld = new PipelineSourcefield()
+                    {
+                        pplsourcefield_gid = 0,//Guid.NewGuid(),
+                        pipeline_code = addpplsourcefld.pipeline_code,
+                        dataset_code = addpplsourcefld.dataset_code,
+                        sourcefield_format = addpplsourcefld.sourcefield_format,
+                        sourcefield_name = addpplsourcefld.sourcefield_name.Trim(),
+                        sourcefield_datatype = addpplsourcefld.sourcefield_datatype,
+                        sourcefield_expression = addpplsourcefld.sourcefield_expression,
+                        source_type = addpplsourcefld.source_type,
+                        dataset_table_field = "col" + colval,
+                        dataset_table_field_sno = colval,
+                        expressionfield_json = datasetTableFieldJson,
+                        sourcefieldmapping_flag = "N",
+                        created_date = addpplsourcefld.created_date,
+                        created_by = addpplsourcefld.created_by,
+                        updated_date = addpplsourcefld.updated_date,
+                        updated_by = addpplsourcefld.updated_by,
+                        delete_flag = "N"
+                    };
+                    await dbContext.con_trn_tpplsourcefield.AddAsync(pplsrcfld);
+                    await dbContext.SaveChangesAsync();
+                    return Ok("Record Inserted Successfully");
+                }
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Updatepplsourcefield([FromBody] UpdatepplSourceFieldRequest updatepplsourcefld)
+        {
+            var pplsrcfield = await dbContext.con_trn_tpplsourcefield.FindAsync(Convert.ToInt32(updatepplsourcefld.pplsourcefield_gid));
+            try
+            {
+                if (pplsrcfield != null)
+                {
+                    var dplchkchanges = await dbContext.con_trn_tpplsourcefield
+                    .Where(p => p.pplsourcefield_gid == Convert.ToInt32(updatepplsourcefld.pplsourcefield_gid)
+                     && p.sourcefield_name.Trim() != updatepplsourcefld.sourcefield_name.Trim()
+                     && p.delete_flag == "N")
+                    .ToListAsync();
+                    if (dplchkchanges.Count > 0)
+                    {
+                        var dplchk = await dbContext.con_trn_tpplsourcefield
+                        .Where(p => p.pipeline_code == updatepplsourcefld.pipeline_code
+                         && p.dataset_code == updatepplsourcefld.dataset_code
+                         && p.sourcefield_name.Trim() == updatepplsourcefld.sourcefield_name.Trim()
+                         && p.delete_flag == "N")
+                        .ToListAsync();
+                        if (dplchk.Count >= 1)
+                        {
+                            return Ok("Duplicate Record..!");
+                        }
+                    }
+
+                    // Extract values inside square brackets
+                    var matches = Regex.Matches(updatepplsourcefld.sourcefield_expression, @"\[([^\]]+)\]")
+                                       .Cast<Match>()
+                                       .Select(m => m.Groups[1].Value)
+                                       .ToArray();
+
+                    // Create a list of anonymous objects with the extracted values
+                    var jsonObjects = matches.Select(value => new { source_field = value }).ToList();
+
+                    List<string> matchList = matches.ToList();
+                    // Serialize the list to a JSON string
+                    string datasetTableFieldJson = JsonConvert.SerializeObject(jsonObjects);
+
+                    var srcmap_count = dbContext.con_trn_tpplsourcefield
+                       .Where(x =>
+                           x.sourcefieldmapping_flag == "Y" &&
+                           x.delete_flag == "N" &&
+                           x.pipeline_code == updatepplsourcefld.pipeline_code &&
+                           x.dataset_code == updatepplsourcefld.dataset_code)
+                       .Count();
+
+                    int colval = srcmap_count + 1;
+
+                    var recordsToUpdate = dbContext.con_trn_tpplsourcefield
+                    .Where(s => matchList.Contains(s.sourcefield_name) &&
+                                s.pipeline_code == updatepplsourcefld.pipeline_code &&
+                                s.dataset_code == updatepplsourcefld.dataset_code &&
+                                //s.sourcefield_name == "" &&
+                                s.delete_flag == "N")
+                    .ToList();
+
+
+                    foreach (var recordToUpdate in recordsToUpdate)
+                    {
+                        var v_cast_dataset_table_field = "";
+                        var v_dataset_table_field = "";
+                        int v_dataset_table_field_sno = 0;
+
+                        if (recordToUpdate.sourcefieldmapping_flag == "Y")
+                        {
+                            v_dataset_table_field = recordToUpdate.dataset_table_field;
+                            v_dataset_table_field_sno = recordToUpdate.dataset_table_field_sno;
+                        }
+                        else
+                        {
+                            v_dataset_table_field = "col" + colval;
+                            v_dataset_table_field_sno = colval;
+                            colval = colval + 1;
+                        }
+
+                        if (!string.IsNullOrEmpty(recordToUpdate.sourcefield_name))
+                        {
+
+                            if (updatepplsourcefld.sourcefield_datatype == "TEXT")
+                            {
+                                v_cast_dataset_table_field = v_dataset_table_field;
+                            }
+                            else if (updatepplsourcefld.sourcefield_datatype == "DATE")
+                            {
+                                v_cast_dataset_table_field = "CAST(STR_TO_DATE(if(" + v_dataset_table_field + "='',null," + v_dataset_table_field + "),'#DATE_FORMAT#') AS DATE)";
+                            }
+                            else if (updatepplsourcefld.sourcefield_datatype == "NUMERIC")
+                            {
+                                v_cast_dataset_table_field = "CAST(if(" + v_dataset_table_field + "='',null," + v_dataset_table_field + ") AS DECIMAL(15,2))";
+
+                            }
+                            else if (updatepplsourcefld.sourcefield_datatype == "INTEGER")
+                            {
+                                //17-03-2025
+                                //v_cast_dataset_table_field = "(CAST(if(" + v_dataset_table_field + "='' or " + v_dataset_table_field + "= null " + ",0," + v_dataset_table_field + ") AS SIGNED))";
+                                v_cast_dataset_table_field = "CAST(if(" + v_dataset_table_field + "='' ,null," + v_dataset_table_field + ") AS SIGNED)";
+                            }
+                            else if (updatepplsourcefld.sourcefield_datatype == "DATETIME")
+                            {
+                                v_cast_dataset_table_field = "STR_TO_DATE(if(" + v_dataset_table_field + "='',null," + v_dataset_table_field + "),'#DATETIME_FORMAT#')";
+                            }
+                            recordToUpdate.sourcefieldmapping_flag = "Y";
+                            recordToUpdate.dataset_table_field = v_dataset_table_field;
+                            recordToUpdate.dataset_table_field_sno = v_dataset_table_field_sno;
+                            recordToUpdate.sourcefield_datatype = updatepplsourcefld.sourcefield_datatype; // changes done on 28-01-2025
+                            recordToUpdate.cast_dataset_table_field = v_cast_dataset_table_field;
+                        }
+                    }
+                    pplsrcfield.sourcefield_name = updatepplsourcefld.sourcefield_name.Trim();
+                    pplsrcfield.sourcefield_datatype = updatepplsourcefld.sourcefield_datatype;
+                    pplsrcfield.sourcefield_expression = updatepplsourcefld.sourcefield_expression;
+                    pplsrcfield.expressionfield_json = datasetTableFieldJson;
+                    pplsrcfield.updated_date = updatepplsourcefld.updated_date;
+                    pplsrcfield.updated_by = updatepplsourcefld.updated_by;
+                    await dbContext.SaveChangesAsync();
+                    return Ok("Record Updated Successfully");
+                }
+                return NotFound("Not Found TO Update");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Deletepplsourcefield(int pplsourcefield_gid)
+        {
+            try
+            {
+                var pplsrcfieldToDelete = dbContext.con_trn_tpplsourcefield.FirstOrDefault(p => p.pplsourcefield_gid == pplsourcefield_gid);
+
+                if (pplsrcfieldToDelete != null)
+                {
+                    var pplfieldmappToDelete = dbContext.con_trn_tpplfieldmapping.FirstOrDefault(p => p.ppl_field_name == pplsrcfieldToDelete.sourcefield_name
+                    && p.pipeline_code == pplsrcfieldToDelete.pipeline_code && p.delete_flag == "N");
+                    if (pplfieldmappToDelete != null)
+                    {
+                        pplfieldmappToDelete.ppl_field_name = "-- Select --";
+                        await dbContext.SaveChangesAsync();
+                    }
+
+                    pplsrcfieldToDelete.delete_flag = "Y";
+                    await dbContext.SaveChangesAsync();
+                }
+                return Ok("Deleted Successfully..!");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> DeletepplCondition(int pplcondition_gid)
+        {
+            try
+            {
+                var pplCondToDelete = dbContext.con_trn_tpplcondition.FirstOrDefault(p => p.pplcondition_gid == pplcondition_gid);
+                if (pplCondToDelete != null)
+                {
+                    pplCondToDelete.delete_flag = "Y";
+                    await dbContext.SaveChangesAsync();
+                }
+                return Ok("Deleted Successfully..!");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #region Pipeline Field Mapping
+        [HttpPost]
+        public async Task<IActionResult> AddpplFieldMapping_old([FromBody] AddpplFieldMappingRequest addpplfieldmap)
+        {
+            try
+            {
+
+                int count = dbContext.con_trn_tpplfieldmapping.Count();
+                int maxId;
+                if (count > 0)
+                {
+                    maxId = dbContext.con_trn_tpplfieldmapping.Max(entity => entity.pplfieldmapping_gid);
+                    maxId = maxId + 1;
+                }
+                else
+                {
+                    maxId = 1;
+                }
+
+                var pplmap = new PipelineMapping()
+                {
+                    pplfieldmapping_gid = 0,//Guid.NewGuid(),
+                    pipeline_code = addpplfieldmap.pipeline_code,
+                    ppl_field_name = addpplfieldmap.ppl_field_name,
+                    dataset_field_name = addpplfieldmap.dataset_field_name,
+                    default_value = addpplfieldmap.default_value,
+                    created_date = addpplfieldmap.created_date,
+                    created_by = addpplfieldmap.created_by,
+                    updated_date = addpplfieldmap.updated_date,
+                    updated_by = addpplfieldmap.updated_by,
+                    delete_flag = "N"
+                };
+                await dbContext.con_trn_tpplfieldmapping.AddAsync(pplmap);
+                await dbContext.SaveChangesAsync();
+
+                return Ok("Record Inserted Successfully");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+        [HttpGet]
+        public async Task<IActionResult> GetpplFieldMapping(string pipelinecode, string datasetcode = "")
+        {
+            /*var ds1 = dbContext.con_mst_tpipeline
+               .Where(p => p.pipeline_code == pipelinecode && p.delete_flag == "N")
+               .Select(p => new Pipeline
+               {
+                   target_dataset_code = p.target_dataset_code,
+               })
+               .SingleOrDefault();*/
+
+            var ds_code = await dbContext.con_trn_tpplfieldmapping
+                .Where(a => a.pipeline_code == pipelinecode
+                            && a.dataset_code == datasetcode
+                            && a.delete_flag == "N")
+                .Select(a => new
+                {
+                    pplfieldmapping_gid = a.pplfieldmapping_gid,
+                    pipeline_code = a.pipeline_code,
+                    pplfieldmapping_flag = a.pplfieldmapping_flag,
+                    ppl_field_name = a.ppl_field_name,
+                    dataset_field_name = a.dataset_field_name,
+                    //extraction_criteria = a.extraction_criteria,
+                    dataset_code = a.dataset_code,
+                    default_value = a.default_value
+
+                })
+                .Join(dbContext.con_mst_tdataset_field
+                .Where(df => df.dataset_code == datasetcode && df.delete_flag == "N"),
+                    a => a.dataset_field_name, // Join key from con_trn_tpplfieldmapping
+                    df => df.dataset_field_name,        // Join key from con_mst_tdatasetfield
+                    (a, df) => new
+                    {
+                        a.pplfieldmapping_gid,
+                        a.pipeline_code,
+                        a.dataset_code,
+                        a.ppl_field_name,
+                        a.dataset_field_name,
+                        a.pplfieldmapping_flag,
+                        //a.extraction_criteria,
+                        a.default_value,
+                        df.dataset_field_desc,
+                        df.field_mandatory
+                    }
+
+                )
+                .ToListAsync();
+
+            try
+            {
+                if (ds_code == null)
+
+                {
+                    return NotFound("Not Found");
+                }
+                return Ok(ds_code);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetpplFieldMappingList(string pipelincode, string dataset_code, string source_name)
+        {
+            var ds_code = await dbContext.con_mst_tdataset_field
+
+                       .Where(a => a.dataset_code == dataset_code && a.delete_flag == "N")
+                       .Select(a => new
+                       {
+                           dataset_field_desc = a.dataset_field_desc,
+                           dataset_field_name = a.dataset_field_name
+                       })
+                       .ToListAsync();
+
+            return Ok(ds_code);
+
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Deletepplfieldmap(int id)
+        {
+            var pplfieldmap = await dbContext.con_trn_tpplfieldmapping.FindAsync(id);
+            try
+            {
+                if (pplfieldmap != null)
+                {
+                    dbContext.Remove(pplfieldmap);
+                    await dbContext.SaveChangesAsync();
+                    return Ok("Deleted Successfully..!");
+                }
+
+                return NotFound("Not Found To Delete");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> Getpipelineinfo(int pipelinegid)
+        {
+            try
+            {
+                var pipeline = await dbContext.con_mst_tpipeline
+                .Join(
+                    dbContext.con_mst_tconnection,
+                    a => a.connection_code,
+                    b => b.connection_code,
+                    (a, b) => new
+                    {
+                        pipeline_gid = a.pipeline_gid,
+                        pipeline_code = a.pipeline_code,
+                        pipeline_name = a.pipeline_name,
+                        connection_code = a.connection_code,
+                        connection_name = b.connection_name,
+                        table_view_query_type = a.table_view_query_type,
+                        table_view_query_desc = a.table_view_query_desc,
+                        delete_flag = a.delete_flag,
+                        bdelete_flag = b.delete_flag,
+                    }
+                )
+                .Where(a => a.delete_flag == "N" && a.bdelete_flag == "N" && a.pipeline_gid == pipelinegid)
+                .ToListAsync();
+                return Ok(pipeline);
+            }
+
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetallExpressionsList(string pipeline_code, string dataset_code)
+        {
+            var pplsrcexpr = await dbContext.con_trn_tpplsourcefield
+
+                       .Where(a => a.pipeline_code == pipeline_code
+                                    && a.dataset_code == dataset_code
+                                    && a.source_type == "Expression" && a.delete_flag == "N")
+                       .Select(a => new
+                       {
+                           pplsourcefield_gid = a.pplsourcefield_gid,
+                           pipeline_code = a.pipeline_code,
+                           dataset_code = a.dataset_code,
+                           sourcefield_name = a.sourcefield_name,
+                           sourcefield_datatype = a.sourcefield_datatype,
+                           sourcefield_expression = a.sourcefield_expression,
+                           source_type = a.source_type
+                       })
+                       .ToListAsync();
+
+            try
+            {
+                if (pplsrcexpr == null)
+
+                {
+                    return NotFound("Not Found");
+                }
+                return Ok(pplsrcexpr);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+        #endregion
+
+        #region Pipeline Condition
+        [HttpPost]
+        public async Task<IActionResult> AddpplCondition([FromBody] AddpplConditionRequest addpplCondition)
+        {
+            try
+            {
+
+                int count = dbContext.con_trn_tpplcondition.Count();
+                int maxId;
+                if (count > 0)
+                {
+                    maxId = dbContext.con_trn_tpplcondition.Max(entity => entity.pplcondition_gid);
+                    maxId = maxId + 1;
+                }
+                else
+                {
+                    maxId = 1;
+                }
+                var pplcon = new PipelineCondition()
+                {
+                    pplcondition_gid = 0,//Guid.NewGuid(),
+                    pipeline_code = addpplCondition.pipeline_code,
+                    dataset_code = addpplCondition.dataset_code,
+                    condition_type = addpplCondition.condition_type,
+                    condition_name = addpplCondition.condition_name,
+                    condition_text = addpplCondition.condition_text,
+                    condition_msg = addpplCondition.condition_msg,
+                    sys_flag = "N",
+                    created_date = addpplCondition.created_date,
+                    created_by = addpplCondition.created_by,
+                    updated_date = addpplCondition.updated_date,
+                    updated_by = addpplCondition.updated_by,
+                    delete_flag = "N"
+                };
+                await dbContext.con_trn_tpplcondition.AddAsync(pplcon);
+                await dbContext.SaveChangesAsync();
+
+                var lastInsertedId = pplcon.pplcondition_gid;
+
+                return Ok(lastInsertedId);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetpplCondition(string pipelinecode, string condition_type, string datasetcode = "")
+        {
+
+            var ds_code = await dbContext.con_trn_tpplcondition
+                          .Where(a => a.pipeline_code == pipelinecode && a.condition_type == condition_type
+                          && a.dataset_code == datasetcode
+                          //&& a.sys_flag == "N" 
+                          && a.delete_flag == "N")
+                          .Select(a => new
+                          {
+                              pplcondition_gid = a.pplcondition_gid,
+                              pipeline_code = a.pipeline_code,
+                              dataset_code = a.dataset_code,
+                              condition_type = a.condition_type,
+                              condition_name = a.condition_name,
+                              condition_text = a.condition_text,
+                              condition_msg = a.condition_msg,
+                              sys_flag = a.sys_flag
+                          })
+                           .ToListAsync();
+            try
+            {
+                if (ds_code == null)
+
+                {
+                    return NotFound("Not Found");
+                }
+                return Ok(ds_code);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Updatepplcondition([FromBody] UpdatepplConditionRequest updatepplCondition)
+        {
+            var pplcond = await dbContext.con_trn_tpplcondition.FindAsync(Convert.ToInt32(updatepplCondition.pplcondition_gid));
+            try
+            {
+
+                if (pplcond != null)
+                {
+                    pplcond.condition_type = updatepplCondition.condition_type;
+                    pplcond.condition_name = updatepplCondition.condition_name;
+                    pplcond.condition_text = updatepplCondition.condition_text;
+                    pplcond.condition_msg = updatepplCondition.condition_msg;
+                    pplcond.updated_date = updatepplCondition.updated_date;
+                    pplcond.updated_by = updatepplCondition.updated_by;
+
+                    await dbContext.SaveChangesAsync();
+
+                    return Ok("Record Updated Successfully");
+
+                }
+                return NotFound("Not Found TO Update");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public bool IsQueryValid(string conn_code, string db_name, string query)
+        {
+            var connector = dbContext.con_mst_tconnection
+                 .Where(p => p.connection_code == conn_code && p.delete_flag == "N")
+                 .Select(p => new ConnectionModel
+                 {
+                     source_host_name = p.source_host_name,
+                     source_port = p.source_port,
+                     source_db_user = p.source_db_user,
+                     source_db_pwd = p.source_db_pwd,
+                     source_db_type = p.source_db_type
+                 })
+                 .SingleOrDefault();
+            try
+            {
+                if (connector == null)
+                {
+                    return false;
+                }
+                var connstring = "";
+
+                if (connector.source_db_type == "MySql")
+                {
+                    connstring = "server=" + connector.source_host_name + "; Database=" + db_name + "; uid=" +
+                             connector.source_db_user + "; pwd=" + connector.source_db_pwd + ";";
+
+                    using (MySqlConnection connection = new MySqlConnection(connstring))
+                    {
+                        connection.Open();
+                        query = query.Replace("[", "`").Replace("]", "`");
+                        using (MySqlCommand command = new MySqlCommand(query, connection))
+                        {
+                            command.ExecuteNonQuery();
+                        }
+                    }
+                    return true;
+                }
+                else if (connector.source_db_type == "Postgres")
+                {
+                    connstring = "Host=" + connector.source_host_name + "; Database=" + db_name + "; Username=" +
+                                 connector.source_db_user + "; Password=" + connector.source_db_pwd + ";";
+                    using (NpgsqlConnection connection = new NpgsqlConnection(connstring))
+                    {
+                        connection.Open();
+                        using (NpgsqlCommand command = new NpgsqlCommand(query, connection))
+                        {
+                            command.ExecuteNonQuery();
+                        }
+                    }
+                    return true;
+                }
+                else if (connector.source_db_type == "Sql")
+                {
+                    using (SqlConnection connection = new SqlConnection(connstring))
+                    {
+                        connection.Open();
+                        using (SqlCommand command = new SqlCommand(query, connection))
+                        {
+                            command.ExecuteNonQuery();
+                        }
+                    }
+                    return true;
+                }
+
+                return false;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        [HttpGet]
+        public string IsCheckQueryValid(string pipeline_code, string dataset_code, string query, string query_for)
+        {
+            using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+            {
+                if (connect.State != ConnectionState.Open)
+                    connect.Open();
+
+                try
+                {
+                    MySqlCommand command = connect.CreateCommand();
+
+                    command.CommandType = CommandType.StoredProcedure;
+                    command.CommandText = "pr_con_checkquery";
+
+                    command.Parameters.AddWithValue("in_pipeline_code", pipeline_code);
+                    command.Parameters.AddWithValue("in_dataset_code", dataset_code);
+                    command.Parameters.AddWithValue("in_query_for", query_for);
+                    command.Parameters.AddWithValue("in_query", query);
+
+                    MySqlParameter out_msg = new MySqlParameter("@out_msg", MySqlDbType.VarChar, 255)
+                    {
+                        Direction = ParameterDirection.Output
+                    };
+                    command.Parameters.Add(out_msg);
+                    command.ExecuteNonQuery();
+
+                    string outMsgValue = command.Parameters["@out_msg"].Value.ToString();
+                    return outMsgValue;
+                }
+
+                catch (Exception ex)
+                {
+                    return ex.Message.ToString();
+                }
+            }
+            ;
+
+        }
+
+        #endregion
+
+        #region Pipeline Finalization
+        //[HttpPost]
+        //public async Task<IActionResult> Addpplfinalization_old([FromBody] AddpplFinalizationRequest addpplFinalization)
+        //{
+        //    try
+        //    {
+        //        int count = dbContext.con_trn_tpplfinalization.Count();
+        //        int maxId;
+        //        if (count > 0)
+        //        {
+        //            maxId = dbContext.con_trn_tpplfinalization.Max(entity => entity.finalization_gid);
+        //            maxId = maxId + 1;
+        //        }
+        //        else
+        //        {
+        //            maxId = 1;
+        //        }
+        //        if (addpplFinalization.extract_condition.ToString().Trim() != "")
+        //        {
+        //            // Regular expression pattern to match key-value pairs
+        //            string pattern = @"\[(.*?)\] > \[(.*?)\]";
+
+        //            // Match key-value pairs using regular expression
+        //            MatchCollection matches = Regex.Matches(addpplFinalization.extract_condition, pattern);
+
+        //            // Create a list to hold JSON objects
+        //            List<JObject> jsonDataList = new List<JObject>();
+
+        //            foreach (Match match in matches)
+        //            {
+        //                // Extract key and value from the match groups
+        //                string key = match.Groups[1].Value;
+        //                string value = match.Groups[2].Value;
+
+        //                // Create a JObject for each pair
+        //                JObject jsonObject = new JObject();
+
+        //                // Add key-value pairs to the JObject
+        //                jsonObject.Add(key, value);
+
+        //                // Add the JObject to the list
+        //                jsonDataList.Add(jsonObject);
+        //            }
+
+        //            // Convert the list of JSON objects to a JSON array
+        //            JArray jsonArray = new JArray(jsonDataList);
+
+        //            // Convert the JSON array to a formatted string
+        //            addpplFinalization.last_incremental_val = jsonArray.ToString();
+        //        }
+
+
+        //        var pplfin = new PipelineFinalization()
+        //        {
+        //            finalization_gid = 0,//Guid.NewGuid(),
+        //            pipeline_code = addpplFinalization.pipeline_code,
+        //            run_type = addpplFinalization.run_type,
+        //            cron_expression = addpplFinalization.cron_expression,
+        //            extract_mode = addpplFinalization.extract_mode,
+        //            upload_mode = addpplFinalization.upload_mode,
+        //            key_field = addpplFinalization.key_field,
+        //            extract_condition = addpplFinalization.extract_condition,
+        //            last_incremental_val = addpplFinalization.last_incremental_val,
+        //            pull_days = addpplFinalization.pull_days,
+        //            reject_duplicate_flag = addpplFinalization.reject_duplicate_flag,
+        //            error_mode = addpplFinalization.error_mode,
+        //            created_date = addpplFinalization.created_date,
+        //            created_by = addpplFinalization.created_by,
+        //            updated_date = addpplFinalization.updated_date,
+        //            updated_by = addpplFinalization.updated_by,
+        //            delete_flag = "N"
+        //        };
+        //        await dbContext.con_trn_tpplfinalization.AddAsync(pplfin);
+        //        await dbContext.SaveChangesAsync();
+
+        //        var lastInsertedId = pplfin.finalization_gid;
+
+        //        //Update pipeine status
+        //        var existingPipeline = await dbContext.con_mst_tpipeline.SingleOrDefaultAsync(p => p.pipeline_code == pplfin.pipeline_code);
+
+        //        if (existingPipeline != null)
+        //        {
+        //            // Update the properties of the existing entity
+        //            existingPipeline.pipeline_status = addpplFinalization.pipeline_status;
+
+        //            // Save the changes to the database
+        //            await dbContext.SaveChangesAsync();
+
+        //            //Insert on Scheduler table once pipeline activated
+
+        //            if (addpplFinalization.run_type == "Scheduled Run")
+        //            {
+        //                var schldpplcode = dbContext.con_trn_tscheduler
+        //                 .Where(a => a.pipeline_code == pplfin.pipeline_code
+        //                 //&& a.scheduler_status == "Scheduled" 
+        //                 && a.scheduler_status == "Scheduled" || a.scheduler_status == "Locked"
+        //                 && a.delete_flag == "N")
+        //                 .Select(a => new
+        //                 {
+        //                     scheduler_gid = a.scheduler_gid,
+        //                     pipeline_code = a.pipeline_code,
+        //                     Rawfilepath = a.file_path
+        //                 }).OrderByDescending(a => a.scheduler_gid)
+        //                 .FirstOrDefault();
+        //                if (schldpplcode != null)
+        //                {
+        //                    var sch = new Scheduler()
+        //                    {
+        //                        scheduler_gid = 0,
+        //                        scheduled_date = GetServerDateTime(),//DateTime.Now,
+        //                        pipeline_code = pplfin.pipeline_code,
+        //                        file_name = src_filename,
+        //                        scheduler_start_date = Convert.ToDateTime(GetNextFireTime(pplfin.cron_expression)),//ReplaceTimeInCurrentDate(pplfin.cron_expression),//DateTime.Now,
+        //                        scheduler_status = "Scheduled",
+        //                        scheduler_initiated_by = pplfin.created_by,
+        //                        delete_flag = "N"
+        //                    };
+        //                    await dbContext.con_trn_tscheduler.AddAsync(sch);
+        //                    await dbContext.SaveChangesAsync();
+        //                }
+        //            }
+
+        //        }
+
+        //        return Ok("All details saved successfully..!");
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return BadRequest($"Error: {ex.Message}");
+        //    }
+        //}
+
+        // 20-08-2024
+        [HttpPost]
+        public async Task<IActionResult> Addpplfinalization([FromBody] AddpplFinalizationRequest addpplFinalization)
+        {
+            try
+            {
+                int count = dbContext.con_trn_tpplfinalization.Count();
+                int maxId;
+                if (count > 0)
+                {
+                    maxId = dbContext.con_trn_tpplfinalization.Max(entity => entity.finalization_gid);
+                    maxId = maxId + 1;
+                }
+                else
+                {
+                    maxId = 1;
+                }
+                if (addpplFinalization.extract_condition.ToString().Trim() != "")
+                {
+                    // Regular expression pattern to match key-value pairs
+                    string pattern = @"\[(.*?)\] > \[(.*?)\]";
+
+                    // Match key-value pairs using regular expression
+                    MatchCollection matches = Regex.Matches(addpplFinalization.extract_condition, pattern);
+
+                    // Create a list to hold JSON objects
+                    List<JObject> jsonDataList = new List<JObject>();
+
+                    foreach (Match match in matches)
+                    {
+                        // Extract key and value from the match groups
+                        string key = match.Groups[1].Value;
+                        string value = match.Groups[2].Value;
+
+                        // Create a JObject for each pair
+                        JObject jsonObject = new JObject();
+
+                        // Add key-value pairs to the JObject
+                        jsonObject.Add(key, value);
+
+                        // Add the JObject to the list
+                        jsonDataList.Add(jsonObject);
+                    }
+
+                    // Convert the list of JSON objects to a JSON array
+                    JArray jsonArray = new JArray(jsonDataList);
+
+                    // Convert the JSON array to a formatted string
+                    addpplFinalization.last_incremental_val = jsonArray.ToString();
+                }
+
+
+                var pplfin = new PipelineFinalization()
+                {
+                    finalization_gid = 0,//Guid.NewGuid(),
+                    pipeline_code = addpplFinalization.pipeline_code,
+                    dataset_code = addpplFinalization.dataset_code,
+                    run_type = addpplFinalization.run_type,
+                    cron_expression = addpplFinalization.cron_expression,
+                    extract_mode = addpplFinalization.extract_mode,
+                    upload_mode = addpplFinalization.upload_mode,
+                    key_field = addpplFinalization.key_field,
+                    extract_condition = addpplFinalization.extract_condition,
+                    last_incremental_val = addpplFinalization.last_incremental_val,
+                    pull_days = addpplFinalization.pull_days,
+                    reject_duplicate_flag = addpplFinalization.reject_duplicate_flag,
+                    error_mode = addpplFinalization.error_mode,
+                    duplicate_mode = addpplFinalization.duplicate_mode,
+                    parent_dataset_code = addpplFinalization.parent_dataset_code,
+                    created_date = addpplFinalization.created_date,
+                    created_by = addpplFinalization.created_by,
+                    updated_date = addpplFinalization.updated_date,
+                    updated_by = addpplFinalization.updated_by,
+                    delete_flag = "N"
+                };
+                await dbContext.con_trn_tpplfinalization.AddAsync(pplfin);
+                await dbContext.SaveChangesAsync();
+
+                var lastInsertedId = pplfin.finalization_gid;
+
+                //GET Dataset Code against Pipeline Start Implemented on 11-02-2025 By Mohan
+                var ppl_dscode = dbContext.con_mst_tpipeline
+                       .Where(p => p.pipeline_code == addpplFinalization.pipeline_code && p.pipeline_status == "Active" && p.delete_flag == "N")
+                       .Select(a => new
+                       {
+                           a.target_dataset_code
+                       }).FirstOrDefault();
+
+                //Create Trigger For Target Dataset Db
+                if (ppl_dscode != null)
+                {
+                    await CreateTrigger(ppl_dscode.target_dataset_code);
+                }
+                //End Implemented on 11-02-2025 By Mohan
+
+                //Update pipeine status
+                var existingPipeline = await dbContext.con_mst_tpipeline.SingleOrDefaultAsync(p => p.pipeline_code == pplfin.pipeline_code);
+
+                if (existingPipeline != null)
+                {
+                    // Update the properties of the existing entity
+                    existingPipeline.pipeline_status = addpplFinalization.pipeline_status;
+
+                    // Save the changes to the database
+                    await dbContext.SaveChangesAsync();
+
+                    var existingPipelinedet = await dbContext.con_trn_tpipelinedetails
+                        .FirstOrDefaultAsync(pd => pd.pipeline_code == pplfin.pipeline_code
+                        && pd.target_dataset_code == pplfin.dataset_code
+                        && pd.delete_flag == "N");
+                    if (existingPipelinedet != null)
+                    {
+                        existingPipelinedet.pipelinedet_status = addpplFinalization.pipeline_status;
+                        existingPipelinedet.scheduler_path = addpplFinalization.run_type == "Scheduled Run" ? addpplFinalization.scheduler_file_path : "";
+                        // Save the changes to the database
+                        await dbContext.SaveChangesAsync();
+                    }
+
+                    //Insert on Scheduler table once pipeline activated
+
+                    if (addpplFinalization.run_type == "Scheduled Run")
+                    {
+                        var v_src_filename = "";
+
+                        var pipelineWithConnector = await dbContext.con_mst_tpipeline
+                        .Where(p => p.pipeline_code == addpplFinalization.pipeline_code && p.delete_flag == "N")
+                        .Join(
+                            dbContext.con_mst_tconnection,
+                             pipeline => pipeline.connection_code,
+                             connector => connector.connection_code,
+                            (pipeline, connector) => new { Pipeline = pipeline, Connector = connector }
+                        )
+                        .FirstOrDefaultAsync();
+
+                        v_src_filename = pipelineWithConnector.Pipeline.source_file_name;
+
+                        if (pipelineWithConnector.Connector.source_db_type == "Excel")
+                        {
+                            v_filepath = v_filepath + v_src_filename;
+                        }
+                        else if (pipelineWithConnector.Connector.source_db_type == "API")
+                        {
+                            var apidata = await dbContext.con_trn_tpplapiheader
+                                  .Where(a => a.pipeline_code == addpplFinalization.pipeline_code && a.delete_flag == "N")
+                                  .Select(a => new
+                                  {
+                                      api_jsonvalue = a.api_jsonvalue
+                                  })
+                                  .ToListAsync();
+
+                            v_filepath = apidata[0].api_jsonvalue;
+                        }
+                        else
+                        {
+                            v_filepath = "";
+                        }
+
+                        //Insert on Scheduler table once pipeline activated
+                        var schldpplcode = dbContext.con_trn_tscheduler
+                             .Where(a => a.pipeline_code == addpplFinalization.pipeline_code
+                             && a.dataset_code == addpplFinalization.dataset_code
+                             //&& a.scheduler_status == "Scheduled" 
+                             && a.scheduler_status == "Scheduled" || a.scheduler_status == "Locked"
+                             && a.delete_flag == "N")
+                             .Select(a => new
+                             {
+                                 scheduler_gid = a.scheduler_gid,
+                                 pipeline_code = a.pipeline_code,
+                                 dataset_code = a.dataset_code,
+                                 Rawfilepath = a.file_path
+                             }).OrderByDescending(a => a.scheduler_gid)
+                             .FirstOrDefault();
+
+                        if (schldpplcode == null)
+                        {
+                            //scheduler Path Changes start 2025-06-19
+                            //Get Scheduler path
+                            var ppldtlcode = dbContext.con_trn_tpipelinedetails
+                             .Where(a => a.pipeline_code == addpplFinalization.pipeline_code
+                             && a.target_dataset_code == addpplFinalization.dataset_code
+                             && a.pipelinedet_status == "Active"
+                             //&& a.scheduler_status == "Scheduled" 
+                             && a.delete_flag == "N")
+                             .Select(a => new
+                             {
+                                 scheduler_path = a.scheduler_path
+                             })
+                             .FirstOrDefault();
+
+                            var schdlrpath = ppldtlcode.scheduler_path;
+                            if (schdlrpath == null)
+                            {
+                                schdlrpath = v_filepath;
+                            }
+                            //scheduler Path Changes End 2025-06-19
+
+                            var sch = new Scheduler()
+                            {
+                                scheduler_gid = 0,
+                                scheduled_date = GetServerDateTime(),//DateTime.Now,
+                                pipeline_code = addpplFinalization.pipeline_code,
+                                dataset_code = addpplFinalization.dataset_code,
+                                //file_path = v_filepath,
+                                file_path = schdlrpath,//scheduler Path Changes on 2025-06-19
+                                file_name = "",
+                                scheduler_start_date = Convert.ToDateTime(GetNextFireTime(addpplFinalization.cron_expression)),//ReplaceTimeInCurrentDate(pplfinz.cron_expression),//DateTime.Now,
+                                scheduler_status = "Scheduled",
+                                scheduler_initiated_by = addpplFinalization.created_by,
+                                delete_flag = "N"
+                            };
+
+                            await dbContext.con_trn_tscheduler.AddAsync(sch);
+                            await dbContext.SaveChangesAsync();
+                        }
+                    }
+
+                }
+
+                return Ok("All details saved successfully..!");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Updatepplfinalization([FromBody] UpdatepplFinalizationRequest updpplFinalization)
+        {
+            var pplfinz = await dbContext.con_trn_tpplfinalization.FindAsync(Convert.ToInt32(updpplFinalization.finalization_gid));
+            try
+            {
+                string jsonString = "";
+                if (updpplFinalization.extract_condition.ToString().Trim() != "")
+                {
+                    // Regular expression pattern to match key-value pairs
+                    string pattern = @"\[(.*?)\] > \[(.*?)\]";
+
+                    // Match key-value pairs using regular expression
+                    MatchCollection matches = Regex.Matches(updpplFinalization.extract_condition, pattern);
+
+                    // Create a list to hold JSON objects
+                    List<JObject> jsonDataList = new List<JObject>();
+
+                    foreach (Match match in matches)
+                    {
+                        // Extract key and value from the match groups
+                        string key = match.Groups[1].Value;
+                        string value = match.Groups[2].Value;
+
+                        // Create a JObject for each pair
+                        JObject jsonObject = new JObject();
+
+                        // Add key-value pairs to the JObject
+                        jsonObject.Add(key, value);
+
+                        // Add the JObject to the list
+                        jsonDataList.Add(jsonObject);
+                    }
+
+                    // Convert the list of JSON objects to a JSON array
+                    JArray jsonArray = new JArray(jsonDataList);
+
+                    // Convert the JSON array to a formatted string
+                    jsonString = jsonArray.ToString();
+                }
+
+                if (pplfinz != null)
+                {
+                    pplfinz.run_type = updpplFinalization.run_type;
+                    pplfinz.cron_expression = updpplFinalization.cron_expression;
+                    pplfinz.extract_mode = updpplFinalization.extract_mode;
+                    pplfinz.upload_mode = updpplFinalization.upload_mode;
+                    pplfinz.key_field = updpplFinalization.key_field;
+                    pplfinz.extract_condition = updpplFinalization.extract_condition;
+                    pplfinz.last_incremental_val = jsonString;
+                    pplfinz.pull_days = updpplFinalization.pull_days;
+                    pplfinz.reject_duplicate_flag = updpplFinalization.reject_duplicate_flag;
+                    pplfinz.error_mode = updpplFinalization.error_mode;
+                    pplfinz.duplicate_mode = updpplFinalization.duplicate_mode;
+                    pplfinz.parent_dataset_code = updpplFinalization.parent_dataset_code;
+                    pplfinz.updated_date = updpplFinalization.updated_date;
+                    pplfinz.updated_by = updpplFinalization.updated_by;
+
+                    await dbContext.SaveChangesAsync();
+
+                    //Get Pipelinecode
+                    var pppl_code = dbContext.con_trn_tpplfinalization
+                    .Where(p => p.finalization_gid == Convert.ToInt32(updpplFinalization.finalization_gid) && p.delete_flag == "N")
+                    .Select(p => new PipelineFinalization
+                    {
+                        pipeline_code = p.pipeline_code
+                    })
+                    .SingleOrDefault();
+
+                    //Update pipeine status
+                    var existingPipeline = await dbContext.con_mst_tpipeline.SingleOrDefaultAsync(p => p.pipeline_code == pppl_code.pipeline_code);
+
+                    if (existingPipeline != null)
+                    {
+                        // Update the properties of the existing entity
+                        existingPipeline.pipeline_status = updpplFinalization.pipeline_status;
+
+                        // Save the changes to the database
+                        await dbContext.SaveChangesAsync();
+
+                        var existingPipelinedet = await dbContext.con_trn_tpipelinedetails
+                            .FirstOrDefaultAsync(pd => pd.pipeline_code == pppl_code.pipeline_code
+                            && pd.target_dataset_code == pplfinz.dataset_code
+                            && pd.delete_flag == "N");
+                        if (existingPipelinedet != null)
+                        {
+                            existingPipelinedet.pipelinedet_status = updpplFinalization.pipeline_status;
+                            existingPipelinedet.scheduler_path = updpplFinalization.run_type == "Scheduled Run" ? updpplFinalization.scheduler_file_path : "";
+                            await dbContext.SaveChangesAsync();
+                        }
+
+                        if (updpplFinalization.run_type == "Scheduled Run")
+                        {
+
+                            var v_src_filename = "";
+                            var pipelineWithConnector = await dbContext.con_mst_tpipeline
+                            .Where(p => p.pipeline_code == pplfinz.pipeline_code && p.delete_flag == "N")
+                            .Join(
+                                dbContext.con_mst_tconnection,
+                                 pipeline => pipeline.connection_code,
+                                 connector => connector.connection_code,
+                                (pipeline, connector) => new { Pipeline = pipeline, Connector = connector }
+                            )
+                            .FirstOrDefaultAsync();
+
+                            v_src_filename = pipelineWithConnector.Pipeline.source_file_name;
+
+                            if (pipelineWithConnector.Connector.source_db_type == "Excel")
+                            {
+                                v_filepath = v_filepath + v_src_filename;
+                            }
+                            else if (pipelineWithConnector.Connector.source_db_type == "API")
+                            {
+                                var apidata = await dbContext.con_trn_tpplapiheader
+                                  .Where(a => a.pipeline_code == pplfinz.pipeline_code && a.delete_flag == "N")
+                                  .Select(a => new
+                                  {
+                                      api_jsonvalue = a.api_jsonvalue
+                                  })
+                                  .ToListAsync();
+
+                                v_filepath = apidata[0].api_jsonvalue;
+                            }
+                            else
+                            {
+                                v_filepath = "";
+                            }
+
+                            //Insert on Scheduler table once pipeline activated
+                            var schldpplcode = dbContext.con_trn_tscheduler
+                                 .Where(a => a.pipeline_code == pplfinz.pipeline_code
+                                 && a.dataset_code == pplfinz.dataset_code
+                                 //&& a.scheduler_status == "Scheduled" 
+                                 && a.scheduler_status == "Scheduled" || a.scheduler_status == "Locked"
+                                 && a.delete_flag == "N")
+                                 .Select(a => new
+                                 {
+                                     scheduler_gid = a.scheduler_gid,
+                                     pipeline_code = a.pipeline_code,
+                                     dataset_code = a.dataset_code,
+                                     Rawfilepath = a.file_path
+                                 }).OrderByDescending(a => a.scheduler_gid)
+                                 .FirstOrDefault();
+
+                            //scheduler Path Changes start 2025-06-19
+                            //Get Scheduler path
+                            var ppldtlcode = dbContext.con_trn_tpipelinedetails
+                             .Where(a => a.pipeline_code == pplfinz.pipeline_code
+                             && a.target_dataset_code == pplfinz.dataset_code
+                             && a.pipelinedet_status == "Active"
+                             && a.delete_flag == "N")
+                             .Select(a => new
+                             {
+                                 scheduler_path = a.scheduler_path
+                             })
+                             .FirstOrDefault();
+
+                            var schdlrpath = ppldtlcode.scheduler_path;
+                            if (schdlrpath == null)
+                            {
+                                schdlrpath = v_filepath;
+                            }
+                            //scheduler Path Changes End 2025-06-19
+
+                            if (schldpplcode == null)
+                            {
+                                var sch = new Scheduler()
+                                {
+                                    scheduler_gid = 0,
+                                    scheduled_date = GetServerDateTime(),//DateTime.Now,
+                                    pipeline_code = pplfinz.pipeline_code,
+                                    dataset_code = pplfinz.dataset_code,
+                                    //file_path = v_filepath,
+                                    file_path = schdlrpath,  //scheduler Path Changes on 2025-06-19
+                                    file_name = "",
+                                    scheduler_start_date = Convert.ToDateTime(GetNextFireTime(pplfinz.cron_expression)),
+                                    // ReplaceTimeInCurrentDate(pplfinz.cron_expression),//DateTime.Now,
+                                    scheduler_status = "Scheduled",
+                                    scheduler_initiated_by = pplfinz.created_by,
+                                    delete_flag = "N"
+                                };
+
+                                await dbContext.con_trn_tscheduler.AddAsync(sch);
+                                await dbContext.SaveChangesAsync();
+                            }
+                            else
+                            {
+                                var dlschedule = await dbContext.con_trn_tscheduler.FindAsync(schldpplcode.scheduler_gid);
+                                dlschedule.scheduler_status = "Cancelled";
+                                dlschedule.last_update_date = GetServerDateTime();//DateTime.Now;
+                                dlschedule.scheduler_initiated_by = pplfinz.created_by;
+
+                                await dbContext.SaveChangesAsync();
+                                var sch = new Scheduler()
+                                {
+                                    scheduler_gid = 0,
+                                    scheduled_date = GetServerDateTime(),//DateTime.Now,
+                                    pipeline_code = pplfinz.pipeline_code,
+                                    dataset_code = pplfinz.dataset_code,
+                                    file_path = schdlrpath,  //scheduler Path Changes on 2025-06-19
+                                    file_name = "",
+                                    //file_path = v_filepath,
+                                    //file_name = v_src_filename,
+                                    scheduler_start_date = Convert.ToDateTime(GetNextFireTime(pplfinz.cron_expression)),//ReplaceTimeInCurrentDate(pplfinz.cron_expression),//DateTime.Now,
+                                    scheduler_status = "Scheduled",
+                                    scheduler_initiated_by = pplfinz.created_by,
+                                    delete_flag = "N"
+                                };
+
+                                await dbContext.con_trn_tscheduler.AddAsync(sch);
+                                await dbContext.SaveChangesAsync();
+                            }
+                        }
+                        //GET Dataset Code against Pipeline Start Implemented on 11-02-2025 By Mohan
+                        var ppl_dscode = dbContext.con_mst_tpipeline
+                               .Where(p => p.pipeline_code == updpplFinalization.pipeline_code && p.pipeline_status == "Active" && p.delete_flag == "N")
+                               .Select(a => new
+                               {
+                                   a.target_dataset_code
+                               }).FirstOrDefault();
+
+                        //Create Trigger For Target Dataset Db
+                        if (ppl_dscode != null)
+                        {
+                            await CreateTrigger(ppl_dscode.target_dataset_code);
+                        }
+                        //End Implemented on 11-02-2025 By Mohan
+                    }
+
+                    return Ok("All details saved successfully..!");
+
+
+                }
+                return NotFound("Not Found To Update");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        public async Task<string> Reschedulefornexttime(string pipelinecode, string dataset_code)
+        {
+            string msg = "Success";
+            try
+            {
+                var finaliz = dbContext.con_trn_tpplfinalization
+                         .Where(a => a.pipeline_code == pipelinecode && a.delete_flag == "N")
+                         .Select(a => new
+                         {
+                             finalization_gid = a.finalization_gid,
+                             cron_expression = a.cron_expression,
+                             pipeline_code = a.pipeline_code
+                         }).OrderByDescending(a => a.finalization_gid)
+                         .FirstOrDefault();
+
+                // var v_filepath = "D:\\Mohan\\ExcelScheduler\\";
+                var v_src_filename = "";
+
+                var pipelineWithConnector = await dbContext.con_mst_tpipeline
+                .Where(p => p.pipeline_code == finaliz.pipeline_code && p.delete_flag == "N")
+                .Join(
+                    dbContext.con_mst_tconnection,
+                                pipeline => pipeline.connection_code,
+                    connector => connector.connection_code,
+                    (pipeline, connector) => new { Pipeline = pipeline, Connector = connector }
+                )
+                .FirstOrDefaultAsync();
+
+                v_src_filename = pipelineWithConnector.Pipeline.source_file_name;
+
+                if (pipelineWithConnector.Connector.source_db_type == "Excel")
+                {
+                    v_filepath = v_filepath + v_src_filename;
+                }
+                else
+                {
+                    v_filepath = "";
+                }
+
+
+                //Insert on Scheduler table once pipeline activated
+                var schldpplcode = dbContext.con_trn_tscheduler
+                     .Where(a => a.pipeline_code == pipelinecode
+                     && a.dataset_code == dataset_code
+                     //&& a.scheduler_status == "Scheduled" 
+                     && a.scheduler_status == "Scheduled" || a.scheduler_status == "Locked"
+                     && a.delete_flag == "N")
+                     .Select(a => new
+                     {
+                         scheduler_gid = a.scheduler_gid,
+                         pipeline_code = a.pipeline_code,
+                         dataset_code = a.dataset_code,
+                         Rawfilepath = a.file_path
+                     }).OrderByDescending(a => a.scheduler_gid)
+                     .FirstOrDefault();
+
+                if (schldpplcode == null)
+                {
+                    //scheduler Path Changes start 2025-06-19
+                    //Get Scheduler path 
+                    var ppldtlcode = dbContext.con_trn_tpipelinedetails
+                     .Where(a => a.pipeline_code == pipelinecode
+                     && a.target_dataset_code == dataset_code
+                     && a.pipelinedet_status == "Active"
+                     && a.delete_flag == "N")
+                     .Select(a => new
+                     {
+                         scheduler_path = a.scheduler_path
+                     })
+                     .FirstOrDefault();
+
+                    var schdlrpath = ppldtlcode.scheduler_path;
+                    if (schdlrpath == null)
+                    {
+                        schdlrpath = v_filepath;
+                    }
+                    //scheduler Path Changes End 2025-06-19
+                    DateTime v_scheduler_start_date = Convert.ToDateTime(GetNextFireTime(finaliz.cron_expression));//ReplaceTimeInCurrentDate(finaliz.cron_expression);
+                    var sch = new Scheduler()
+                    {
+                        scheduler_gid = 0,
+                        scheduled_date = GetServerDateTime(),//DateTime.Now,
+                        pipeline_code = pipelinecode,
+                        dataset_code = dataset_code,
+                        //file_path = v_filepath,
+                        //file_name = v_src_filename,
+                        file_path = schdlrpath,  //scheduler Path Changes on 2025-06-19
+                        file_name = "",  //scheduler Path Changes on 2025-06-19
+                        scheduler_start_date = v_scheduler_start_date,//DateTime.Now,
+                        scheduler_status = "Scheduled",
+                        scheduler_initiated_by = "System",
+                        delete_flag = "N"
+                    };
+
+                    await dbContext.con_trn_tscheduler.AddAsync(sch);
+                    await dbContext.SaveChangesAsync();
+                }
+                return msg;
+            }
+            catch (Exception ex)
+            {
+                msg = "Failed";
+                return msg;
+            }
+        }
+
+        public DateTime ReplaceTimeInCurrentDate(string inputTime)
+        {
+            // Get the current date
+            DateTime currentDateTime = GetServerDateTime();//DateTime.Now;
+
+            // Parse the input time string to extract hours and minutes
+            string[] timeComponents = inputTime.Split(':');
+            int hours = int.Parse(timeComponents[0]);
+            int minutes = int.Parse(timeComponents[1]);
+
+            // Create a DateTime object with the given time and today's date
+            DateTime givenDateTime = new DateTime(currentDateTime.Year, currentDateTime.Month, currentDateTime.Day, hours, minutes, 0);
+
+            // Check if the given time has already passed today
+            if (givenDateTime < currentDateTime)
+            {
+                // If so, add a day to the current date to get tomorrow's date
+                givenDateTime = givenDateTime.AddDays(1);
+            }
+
+            return givenDateTime;
+
+        }
+
+        // 20-08-2024
+        private DateTime? GetNextFireTime(string inputTime)
+        {
+            //var cron = new Quartz.CronExpression("10 * * * * ?");
+            //var cron = new Quartz.CronExpression("* 5 18 ? * 1");
+            var cron = new Quartz.CronExpression(inputTime + " ?");
+            var date = GetServerDateTime();//DateTime.Now;
+            DateTimeOffset? nextFire = cron.GetNextValidTimeAfter(date);
+
+            // Convert the result to local time if nextFire has a value
+            DateTime? localNextFire = nextFire?.LocalDateTime;
+
+            // Log the cron expression, current date, and next fire time
+            Console.WriteLine($"Cron Expression: {cron}");
+            Console.WriteLine($"Current Date: {date}");
+            Console.WriteLine($"Next Fire: {nextFire}");
+
+            return localNextFire;
+        }
+
+        [HttpGet]
+        public IActionResult GetSrcUpdattimestampFields(string connection_code, string databasename, string sourcetable)
+        {
+            var connector = dbContext.con_mst_tconnection
+                .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+                .Select(p => new ConnectionModel
+                {
+                    source_host_name = p.source_host_name,
+                    source_port = p.source_port,
+                    source_db_user = p.source_db_user,
+                    source_db_pwd = p.source_db_pwd,
+                    source_db_type = p.source_db_type,
+                })
+                .SingleOrDefault();
+
+            try
+            {
+                if (connector == null)
+                {
+                    return NotFound("No Data found");
+                }
+
+                var src_connstring = "";
+
+                List<SourcetblFields> columnList = new List<SourcetblFields>();
+
+                if (connector.source_db_type == "MySql")
+                {
+                    src_connstring = "server=" + connector.source_host_name + "; uid=" +
+                                  connector.source_db_user + "; pwd=" + connector.source_db_pwd + ";";
+                    //Source connection establish
+                    using (MySqlConnection connection = new MySqlConnection(src_connstring))
+                    {
+                        connection.Open();
+
+                        string query = "SELECT COLUMN_NAME AS src_field_name, COLUMN_NAME AS src_field_desc " +
+                                       "FROM information_schema.COLUMNS " +
+                                       "WHERE TABLE_SCHEMA = @DatabaseName AND TABLE_NAME = @TableName AND DATA_TYPE = 'datetime'";
+
+                        using (MySqlCommand command = new MySqlCommand(query, connection))
+                        {
+                            command.Parameters.AddWithValue("@DatabaseName", databasename);
+                            command.Parameters.AddWithValue("@TableName", sourcetable);
+
+                            using (MySqlDataReader reader = command.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    SourcetblFields column = new SourcetblFields
+                                    {
+                                        ID = reader.GetString("src_field_name"),
+                                        Name = reader.GetString("src_field_desc")
+                                    };
+                                    columnList.Add(column);
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (connector.source_db_type == "Postgres")
+                {
+                    src_connstring = "Host=" + connector.source_host_name + "; Database=" + databasename + "; Username=" +
+                                  connector.source_db_user + "; Password=" + connector.source_db_pwd + ";";
+                    //Source connection establish
+                    using (NpgsqlConnection connection = new NpgsqlConnection(src_connstring))
+                    {
+                        connection.Open();
+                        string[] parts = sourcetable.Split('.');
+                        databasename = parts[0];
+                        sourcetable = parts[1];
+
+                        string query = "SELECT COLUMN_NAME AS src_field_name, COLUMN_NAME AS src_field_desc " +
+                                       "FROM information_schema.COLUMNS " +
+                                       "WHERE TABLE_SCHEMA = @DatabaseName AND TABLE_NAME = @TableName AND DATA_TYPE = 'timestamp without time zone'";
+
+                        using (NpgsqlCommand command = new NpgsqlCommand(query, connection))
+                        {
+                            command.Parameters.AddWithValue("@DatabaseName", databasename);
+                            command.Parameters.AddWithValue("@TableName", sourcetable);
+
+                            using (NpgsqlDataReader reader = command.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    SourcetblFields column = new SourcetblFields
+                                    {
+                                        ID = reader.GetString("src_field_name"),
+                                        Name = reader.GetString("src_field_desc")
+                                    };
+                                    columnList.Add(column);
+                                }
+                            }
+                        }
+                    }
+                }
+                return Ok(columnList);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetpplFinalization(string pipelinecode, string dataset_code)
+        {
+
+            var pplfinz = await dbContext.con_trn_tpplfinalization
+
+                       .Where(a => a.pipeline_code == pipelinecode && a.dataset_code == dataset_code && a.delete_flag == "N")
+                       .Select(a => new
+                       {
+                           finalization_gid = a.finalization_gid,
+                           pipeline_code = a.pipeline_code,
+                           dataset_code = a.dataset_code,
+                           run_type = a.run_type,
+                           cron_expression = a.cron_expression,
+                           extract_mode = a.extract_mode,
+                           upload_mode = a.upload_mode,
+                           key_field = a.key_field,
+                           extract_condition = a.extract_condition,
+                           pull_days = a.pull_days,
+                           reject_duplicate_flag = a.reject_duplicate_flag,
+                           error_mode = a.error_mode,
+                           duplicate_mode = a.duplicate_mode,
+                           parent_dataset_code = a.parent_dataset_code
+                       })
+                       .ToListAsync();
+
+            try
+            {
+                if (pplfinz == null)
+                {
+                    return NotFound("Not Found");
+                }
+
+                return Ok(pplfinz);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public IActionResult GetRuntypeScheduledList()
+        {
+            try
+            {
+                // Get a list of active pipelines
+                var activePipelines = dbContext.con_mst_tpipeline
+                    .Where(p => p.pipeline_status == "Active" && p.delete_flag == "N")
+                    .Select(c => c.pipeline_code)
+                    .ToList();
+
+                // Get scheduled runs for active pipelines
+                var scheduledRuns = dbContext.con_trn_tpplfinalization
+                    .Where(p => p.run_type == "Scheduled Run"
+                                && activePipelines.Contains(p.pipeline_code)
+                                && p.delete_flag == "N")
+                    .Select(c => new
+                    {
+                        cron_expression = c.cron_expression,
+                        pipeline_code = c.pipeline_code,
+                        delete_flag = c.delete_flag
+                    })
+                    .ToList();
+
+                return Ok(scheduledRuns);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public string SetPipelineStatus_old(string validation_type, string dscode, string ppl_code)
+        {
+            var status = "Draft";
+            var count = 0;
+            if (validation_type == "FieldMapping")
+            {
+                if (dscode != null)
+                {
+
+                    count = dbContext.con_trn_tpplfieldmapping
+                        .Where(x =>
+                            x.dataset_code == dscode &&
+                            x.delete_flag == "N" &&
+                            x.pplfieldmapping_flag == 1 &&
+                            //x.ppl_field_name == "-- Select --" &&
+                            x.pipeline_code == ppl_code)
+                        .Count();
+
+
+                    if (count == 0)
+                    {
+                        var count2 = dbContext.con_trn_tpplfieldmapping
+                       .Where(x =>
+                           x.dataset_code == dscode &&
+                           x.delete_flag == "N" &&
+                           x.pplfieldmapping_flag == 0 &&
+                           (x.ppl_field_name != "-- Select --" && x.default_value != "") &&
+                           x.pipeline_code == ppl_code)
+                       .Count();
+
+                        if (count2 <= 0)
+                        //if (count != count2)
+                        {
+                            status = "Draft";
+                        }
+                        else
+                        {
+                            status = "Active";
+                        }
+                    }
+                    else
+                    {
+                        var count3 = dbContext.con_trn_tpplfieldmapping
+                        .Where(x =>
+                            x.dataset_code == dscode &&
+                            x.delete_flag == "N" &&
+                            x.pplfieldmapping_flag == 1 &&
+                            (x.ppl_field_name == "-- Select --" && (x.default_value == "" || x.default_value == null)) &&
+                            x.pipeline_code == ppl_code)
+                        .Count();
+
+                        if (count3 == 0)
+                        {
+                            status = "Active";
+                        }
+
+                    }
+                }
+            }
+
+            return status;
+        }
+
+        [HttpGet]
+        public string SetPipelineStatus(string validation_type, string dscode, string ppl_code)
+        {
+            var status = "Draft";
+            if (validation_type == "finsave")
+            {
+                if (dscode != null)
+                {
+                    var count3 = dbContext.con_trn_tpplfieldmapping
+                    .Where(x =>
+                        x.dataset_code == dscode &&
+                        x.delete_flag == "N" &&
+                        x.pplfieldmapping_flag == 1 &&
+                        (x.ppl_field_name == "-- Select --" && (x.default_value == "" || x.default_value == null)) &&
+                        x.pipeline_code == ppl_code)
+                    .Count();
+
+                    if (count3 == 0)
+                    {
+                        status = "Active";
+                    }
+                }
+            }
+
+            return status;
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> ExtractCondition_validation(string connection_code, string databasename, string targettable,
+                                                         string pipeline_code, string extract_cond_for, string query)
+        {
+            var ppl = dbContext.con_mst_tpipeline
+           .Where(p => p.pipeline_code == pipeline_code && p.pipeline_status == "Active" && p.delete_flag == "N")
+           .Select(p => new Pipeline
+           {
+               connection_code = p.connection_code,
+               table_view_query_desc = p.table_view_query_desc,
+               db_name = p.db_name
+           })
+           .SingleOrDefault();
+
+            var connector = dbContext.con_mst_tconnection
+                .Where(p => p.connection_code == connection_code && p.delete_flag == "N")
+                .Select(p => new ConnectionModel
+                {
+                    source_host_name = p.source_host_name,
+                    source_port = p.source_port,
+                    source_db_user = p.source_db_user,
+                    source_db_pwd = p.source_db_pwd,
+                    source_db_type = p.source_db_type,
+                })
+                .SingleOrDefault();
+
+            try
+            {
+                string outMsgValue = "";
+                if (connector.ToString() == "")
+                {
+                    outMsgValue = "No Data found";
+                }
+
+                var src_connstring = "";
+
+                if (connector.source_db_type == "MySql")
+                {
+                    src_connstring = "server=" + connector.source_host_name + "; uid=" +
+                                  connector.source_db_user + "; pwd=" + connector.source_db_pwd + "; database=" + ppl.db_name + ";";
+                    //Source connection establish
+                    using (MySqlConnection connection = new MySqlConnection(src_connstring))
+                    {
+                        connection.Open();
+
+                        string query1 = "SELECT * FROM " + targettable +
+                                       " WHERE " + query;
+
+                        using (MySqlCommand command = new MySqlCommand(query, connection))
+                        {
+                            command.CommandType = CommandType.StoredProcedure;
+                            command.CommandText = "pr_con_checkquery_extractcond";
+                            command.CommandTimeout = 0;
+                            command.Parameters.AddWithValue("in_db_name", databasename);
+                            command.Parameters.AddWithValue("in_target_table_name", targettable);
+                            command.Parameters.AddWithValue("in_pipeline_code", pipeline_code);
+                            command.Parameters.AddWithValue("in_extract_condition_for", extract_cond_for);
+                            command.Parameters.AddWithValue("in_query", query1);
+                            MySqlParameter out_msg = new MySqlParameter("@out_msg", MySqlDbType.VarChar, 255)
+                            {
+                                Direction = ParameterDirection.Output
+                            };
+                            command.Parameters.Add(out_msg);
+
+                            command.ExecuteNonQuery();
+                            outMsgValue = command.Parameters["@out_msg"].Value.ToString();
+
+                            connection.Close();
+
+                        }
+                    }
+                }
+                return Ok(outMsgValue);
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #region PPL CSV Header
+        [HttpPost]
+        public async Task<IActionResult> Addpplcsvheader([FromBody] AddpplCsvHeaderRequest addpplcsvhdr)
+        {
+            try
+            {
+
+                //Insert in  csvheader table 
+                var pplcsvhdr = new PipelineCsvHeader()
+                {
+                    pplcsvheader_gid = 0,//Guid.NewGuid(),
+                    pipeline_code = addpplcsvhdr.pipeline_code,
+                    column_separator = addpplcsvhdr.column_separator,
+                    number_ofcolumns = addpplcsvhdr.number_ofcolumns,
+                    number_oflines_toskip = addpplcsvhdr.number_oflines_toskip,
+                    csvfile_dateformat = addpplcsvhdr.csvfile_dateformat,
+                    csvfile_datetimeformat = addpplcsvhdr.csvfile_datetimeformat,
+                    created_date = addpplcsvhdr.created_date,
+                    created_by = addpplcsvhdr.created_by,
+                    updated_date = addpplcsvhdr.updated_date,
+                    updated_by = addpplcsvhdr.updated_by,
+                    delete_flag = "N"
+                };
+                await dbContext.con_trn_tpplcsvheader.AddAsync(pplcsvhdr);
+                await dbContext.SaveChangesAsync();
+
+                return Ok("Record Inserted Successfully");
+            }
+
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Updatepplcsvheader([FromBody] UpdatepplCsvHeaderRequest updatepplcsvhdr)
+        {
+            var pplcsvheader = await dbContext.con_trn_tpplcsvheader.FindAsync(Convert.ToInt32(updatepplcsvhdr.pplcsvheader_gid));
+            try
+            {
+
+                if (pplcsvheader != null)
+                {
+                    //GetallCsvsourcefiledList Against DATE Type
+                    var csvdateformat = dbContext.con_trn_tpplsourcefield
+                       .Where(a => a.pipeline_code == updatepplcsvhdr.pipeline_code
+                              && a.sourcefield_datatype == "DATE" && a.source_type == "CSV" && a.delete_flag == "N")
+                       .Select(a => new
+                       {
+                           pipeline_code = a.pipeline_code
+                       })
+                       .ToList();
+
+                    //GetallCsvsourcefiledList Against DATETIME Type
+                    var csvdatetimeformat = dbContext.con_trn_tpplsourcefield
+                       .Where(a => a.pipeline_code == updatepplcsvhdr.pipeline_code
+                              && a.sourcefield_datatype == "DATETIME" && a.source_type == "CSV" && a.delete_flag == "N")
+                       .Select(a => new
+                       {
+                           pipeline_code = a.pipeline_code
+                       })
+                       .ToList();
+
+                    if (csvdateformat.Count > 0 && updatepplcsvhdr.csvfile_dateformat == "QCD_SELECT")
+                    {
+                        return Ok("Date Format Cannot be blank.");
+                    }
+
+                    if (csvdatetimeformat.Count > 0 && (updatepplcsvhdr.csvfile_dateformat == "QCD_SELECT"
+                        || updatepplcsvhdr.csvfile_datetimeformat == "QCD_SELECT"))
+                    {
+                        return Ok("Date/Time Format Cannot be blank.");
+                    }
+
+                    pplcsvheader.pipeline_code = updatepplcsvhdr.pipeline_code;
+                    pplcsvheader.column_separator = updatepplcsvhdr.column_separator;
+                    pplcsvheader.number_ofcolumns = updatepplcsvhdr.number_ofcolumns;
+                    pplcsvheader.number_oflines_toskip = updatepplcsvhdr.number_oflines_toskip;
+                    pplcsvheader.csvfile_dateformat = updatepplcsvhdr.csvfile_dateformat;
+                    pplcsvheader.csvfile_datetimeformat = updatepplcsvhdr.csvfile_datetimeformat;
+                    pplcsvheader.updated_date = updatepplcsvhdr.updated_date;
+                    pplcsvheader.updated_by = updatepplcsvhdr.updated_by;
+
+                    await dbContext.SaveChangesAsync();
+
+                    return Ok("Record Updated Successfully");
+                }
+                return NotFound("Not Found TO Update");
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> Getpplcsvheader(string pipelinecode)
+        {
+
+            var pplcsvhdr = await dbContext.con_trn_tpplcsvheader
+
+                       .Where(a => a.pipeline_code == pipelinecode && a.delete_flag == "N")
+                       .Select(a => new
+                       {
+                           pplcsvheader_gid = a.pplcsvheader_gid,
+                           pipeline_code = a.pipeline_code,
+                           column_separator = a.column_separator,
+                           number_ofcolumns = a.number_ofcolumns,
+                           number_oflines_toskip = a.number_oflines_toskip,
+                           csvfile_dateformat = a.csvfile_dateformat,
+                           csvfile_datetimeformat = a.csvfile_datetimeformat
+                       })
+                       .ToListAsync();
+
+            try
+            {
+                if (pplcsvhdr == null)
+                {
+                    return NotFound("Not Found");
+                }
+
+                return Ok(pplcsvhdr);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Addcsvsourcefield([FromBody] AddpplSourceFieldRequest addpplcsvsrcfield)
+        {
+            try
+            {
+                // Check for duplicate sourcefield_sno
+                bool isDuplicate = await dbContext.con_trn_tpplsourcefield
+                    .AnyAsync(f => f.pipeline_code == addpplcsvsrcfield.pipeline_code &&
+                                   f.dataset_code == "" &&
+                                   f.sourcefield_sno == addpplcsvsrcfield.sourcefield_sno &&
+                                   f.source_type == "CSV" &&
+                                   f.delete_flag == "N");
+
+                if (isDuplicate)
+                {
+                    return Ok("Duplicate serial no.");
+                }
+
+                if (addpplcsvsrcfield.sourcefield_datatype == "DATE")
+                {
+                    var res = dbContext.con_trn_tpplcsvheader
+                   .Where(p => p.pipeline_code == addpplcsvsrcfield.pipeline_code && p.dataset_code == null && p.delete_flag == "N")
+                   .Select(p => new PipelineCsvHeader
+                   {
+                       csvfile_dateformat = p.csvfile_dateformat,
+                   })
+                   .SingleOrDefault();
+                    if (res.csvfile_dateformat == "QCD_SELECT")
+                    {
+                        return Ok("Date Format Cannot be blank.");
+                    }
+                }
+                else if (addpplcsvsrcfield.sourcefield_datatype == "DATETIME")
+                {
+                    var res = dbContext.con_trn_tpplcsvheader
+                   .Where(p => p.pipeline_code == addpplcsvsrcfield.pipeline_code && p.dataset_code == "" && p.delete_flag == "N")
+                   .Select(p => new PipelineCsvHeader
+                   {
+                       csvfile_dateformat = p.csvfile_dateformat,
+                       csvfile_datetimeformat = p.csvfile_datetimeformat,
+                   })
+                   .SingleOrDefault();
+
+                    if (res.csvfile_dateformat == "QCD_SELECT" || res.csvfile_datetimeformat == "QCD_SELECT")
+                    {
+                        return Ok("Date/Time Format Cannot be blank.");
+                    }
+                }
+
+                //Insert in  csvsourcefield table 
+                var pplcsvsrchdr = new PipelineSourcefield()
+                {
+                    pplsourcefield_gid = 0,//Guid.NewGuid(),
+                    pipeline_code = addpplcsvsrcfield.pipeline_code,
+                    dataset_code = addpplcsvsrcfield.dataset_code,
+                    sourcefield_format = "-- Select --",
+                    sourcefield_name = addpplcsvsrcfield.sourcefield_name,
+                    sourcefield_sno = addpplcsvsrcfield.sourcefield_sno,
+                    sourcefield_datatype = addpplcsvsrcfield.sourcefield_datatype,
+                    source_type = "CSV",
+                    created_date = addpplcsvsrcfield.created_date,
+                    created_by = addpplcsvsrcfield.created_by,
+                    updated_date = addpplcsvsrcfield.updated_date,
+                    updated_by = addpplcsvsrcfield.updated_by,
+                    delete_flag = "N"
+                };
+                await dbContext.con_trn_tpplsourcefield.AddAsync(pplcsvsrchdr);
+                await dbContext.SaveChangesAsync();
+
+                return Ok("Record Inserted Successfully");
+            }
+
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Updatecsvsourcefield([FromBody] UpdatepplSourceFieldRequest updatepplcsvsrcfield)
+        {
+            var pplcsvsrchdr = await dbContext.con_trn_tpplsourcefield.FindAsync(Convert.ToInt32(updatepplcsvsrcfield.pplsourcefield_gid));
+            try
+            {
+                if (pplcsvsrchdr != null)
+                {
+                    // Check for duplicate sourcefield_sno in other records
+                    bool isDuplicate = await dbContext.con_trn_tpplsourcefield
+                        .AnyAsync(f => f.pipeline_code == updatepplcsvsrcfield.pipeline_code &&
+                                       f.dataset_code == "" &&
+                                       f.sourcefield_sno == updatepplcsvsrcfield.sourcefield_sno &&
+                                       f.source_type == "CSV" &&
+                                       f.delete_flag == "N" &&
+                                       f.pplsourcefield_gid != Convert.ToInt32(updatepplcsvsrcfield.pplsourcefield_gid));
+
+                    if (isDuplicate)
+                    {
+                        return Ok("Duplicate serial no.");
+                    }
+
+                    if (updatepplcsvsrcfield.sourcefield_datatype == "DATE")
+                    {
+                        var res = dbContext.con_trn_tpplcsvheader
+                       .Where(p => p.pipeline_code == updatepplcsvsrcfield.pipeline_code && p.dataset_code == "" && p.delete_flag == "N")
+                       .Select(p => new PipelineCsvHeader
+                       {
+                           csvfile_dateformat = p.csvfile_dateformat,
+                       })
+                       .SingleOrDefault();
+                        if (res.csvfile_dateformat == "QCD_SELECT")
+                        {
+                            return Ok("Date Format Cannot be blank.");
+                        }
+                    }
+                    else if (updatepplcsvsrcfield.sourcefield_datatype == "DATETIME")
+                    {
+                        var res = dbContext.con_trn_tpplcsvheader
+                       .Where(p => p.pipeline_code == updatepplcsvsrcfield.pipeline_code && p.dataset_code == "" && p.delete_flag == "N")
+                       .Select(p => new PipelineCsvHeader
+                       {
+                           csvfile_dateformat = p.csvfile_dateformat,
+                           csvfile_datetimeformat = p.csvfile_datetimeformat,
+                       })
+                       .SingleOrDefault();
+
+                        if (res.csvfile_dateformat == "QCD_SELECT" || res.csvfile_datetimeformat == "QCD_SELECT")
+                        {
+                            return Ok("Date/Time Format Cannot be blank.");
+                        }
+                    }
+
+                    pplcsvsrchdr.pipeline_code = updatepplcsvsrcfield.pipeline_code;
+                    pplcsvsrchdr.dataset_code = updatepplcsvsrcfield.dataset_code;
+                    pplcsvsrchdr.sourcefield_name = updatepplcsvsrcfield.sourcefield_name;
+                    pplcsvsrchdr.sourcefield_sno = updatepplcsvsrcfield.sourcefield_sno;
+                    pplcsvsrchdr.sourcefield_datatype = updatepplcsvsrcfield.sourcefield_datatype;
+                    pplcsvsrchdr.updated_date = updatepplcsvsrcfield.updated_date;
+                    pplcsvsrchdr.updated_by = updatepplcsvsrcfield.updated_by;
+
+                    await dbContext.SaveChangesAsync();
+
+                    return Ok("Record Updated Successfully");
+                }
+                return NotFound("Not Found TO Update");
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetallCsvsourcefiledList(string pipeline_code)
+        {
+            var pplsrccsv = await dbContext.con_trn_tpplsourcefield
+
+                       .Where(a => a.pipeline_code == pipeline_code && a.dataset_code == "" && a.source_type == "CSV" && a.delete_flag == "N")
+                       .OrderBy(a => a.sourcefield_sno)
+                       .Select(a => new
+                       {
+                           pplsourcefield_gid = a.pplsourcefield_gid,
+                           pipeline_code = a.pipeline_code,
+                           sourcefield_name = a.sourcefield_name,
+                           sourcefield_datatype = a.sourcefield_datatype,
+                           sourcefield_sno = a.sourcefield_sno,
+                           source_type = a.source_type
+                       })
+                       .ToListAsync();
+
+            try
+            {
+                if (pplsrccsv == null)
+
+                {
+                    return NotFound("Not Found");
+                }
+                return Ok(pplsrccsv);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #region Connection String
+        //SQL Connection string
+        private SqlConnection GetSqlServerConnection(string host_name, string db_name, string user_name, string pswd)
+        {
+            string connectionString = "DataSource =" + host_name + ",InitialCatalog =" + db_name + ",UserID =" + user_name + ",Password =" + pswd + ";";
+            SqlConnection connection = new SqlConnection(connectionString);
+            return connection;
+        }
+
+        //MYSQL Connection string
+        private MySqlConnection GetMySqlServerConnection(string host_name, string db_name, string user_name, string pswd)
+        {
+            string connectionString = "server=" + host_name + "; Database =" + db_name + "; Uid =" + user_name + "; Pwd =" + pswd + ";";
+            MySqlConnection connection = new MySqlConnection(connectionString);
+            return connection;
+        }
+
+        //Postgres Connection string
+        private NpgsqlConnection GetPostgresServerConnection(string host_name, string db_name, string user_name, string pswd)
+        {
+            string connectionString = "Host=" + host_name + "; Database =" + db_name + "; Username =" + user_name + "; Password =" + pswd + ";";
+            NpgsqlConnection connection = new NpgsqlConnection(connectionString);
+            return connection;
+        }
+        #endregion
+
+        #region GetDatatable Dynamically
+        private DataTable GetDataTableFromMySQLServer(MySqlConnection connstring, string table_name, string column_name,
+            string defaultvalue, string updated_time_stamp, string pull_days)
+        {
+            var conn = connstring;
+
+            string[] elements = column_name.Split(',');
+            string[] dfvalue = defaultvalue.Split(',');
+            string column_name_cond = "";
+
+            for (var i = 0; i < elements.Length; i++)
+            {
+                string element = elements[i];  // Retrieve the current element using the index
+                string defaultval = dfvalue[i];
+                string v_defaultval = "";
+
+                // Default condition 
+                if (defaultval.Trim() == "" || defaultval == null)
+                {
+                    v_defaultval = element;
+                }
+                else
+                {
+                    v_defaultval = defaultval;
+                }
+
+                string element_cond = " CASE WHEN " + element + " IS NULL OR " + element + " = '' THEN " + v_defaultval + " ELSE " + element + " END as " + element + ",";
+                column_name_cond += element_cond;
+            }
+
+            // Remove the trailing comma from the last element
+            column_name_cond = column_name_cond.TrimEnd(',');
+
+            string query = "SELECT " + column_name_cond + " FROM " + table_name + ";";
+
+            var command = new MySqlCommand(query, conn);
+            conn.Open();
+            var reader = command.ExecuteReader();
+            DataTable table = new DataTable();
+            table.Load(reader);
+            conn.Close();
+
+            return table;
+        }
+
+        private DataTable GetDataTableFromPostgreSQLServer(NpgsqlConnection connstring, string table_name, string column_name, string defaultvalue)
+        {
+            var conn = connstring;
+
+            string[] elements = column_name.Split(',');
+            string[] dfvalue = defaultvalue.Split(',');
+            string column_name_cond = "";
+
+            for (var i = 0; i < elements.Length; i++)
+            {
+                string element = elements[i];
+                string defaultval = dfvalue[i].Trim();
+                string v_defaultval = "";
+                if (string.IsNullOrWhiteSpace(defaultval))
+                {
+                    v_defaultval = element;
+                }
+                else
+                {
+                    v_defaultval = "'" + defaultval + "'";
+                }
+                string element_cond = $"CASE WHEN {element} IS NULL THEN {v_defaultval} ELSE {element} END AS {element},";
+                column_name_cond += element_cond;
+            }
+
+            // Remove the trailing comma from the last element
+            column_name_cond = column_name_cond.TrimEnd(',');
+
+            string query = $"SELECT {column_name_cond} FROM {table_name};";
+
+            var command = new NpgsqlCommand(query, conn);
+            conn.Open();
+            var reader = command.ExecuteReader();
+            DataTable table = new DataTable();
+            table.Load(reader);
+            conn.Close();
+
+            return table;
+        }
+        #endregion
+
+        #region PushData into Target Table
+        private void PushDataToMySQL(string source_type, DataTable table, string target_table, string upload_mode, string primary_key)
+        {
+            try
+            {
+                var connection = GetMySqlServerConnection(trg_hstname, trg_dbname, trg_username, trg_password);
+                connection.Open();
+                if (upload_mode == "Insert or Update based on key" || upload_mode == "Insert or Update based on key with log")
+                {
+                    //using (MySqlCommand command = connection.CreateCommand())
+                    //{
+                    //    command.CommandText = "CREATE UNIQUE INDEX IX_UniqueIndexName ON " + target_table + "(" + primary_key + "); ";
+                    //    command.ExecuteNonQuery();
+                    //}
+                    if (source_type == "Postgres")
+                    {
+                        string[] parts = target_table.Split('.');
+                        target_table = parts[1];
+                    }
+                    else
+                    {
+                        target_table = target_table.Trim();
+                    }
+                    foreach (DataRow row in table.Rows)
+                    {
+                        string query = ConstructInsertUpdateQuery(source_type, target_table, table.Columns, row, primary_key);
+
+                        using (MySqlCommand command = new MySqlCommand(query, connection))
+                        {
+                            foreach (DataColumn column in table.Columns)
+                            {
+                                command.Parameters.AddWithValue($"@{column.ColumnName}", row[column]);
+                            }
+
+                            command.ExecuteNonQuery();
+                        }
+                    }
+
+                    //using (MySqlCommand command = connection.CreateCommand())
+                    //{
+                    //    command.CommandText = "DROP INDEX IX_UniqueIndexName ON " + target_table + ";";
+                    //    command.ExecuteNonQuery();
+                    //}
+
+                }
+                else if (upload_mode == "Clean and Insert based on Primary key")
+                {
+                    if (source_type == "Postgres")
+                    {
+                        string[] parts = target_table.Split('.');
+                        target_table = parts[1];
+                    }
+                    else
+                    {
+                        target_table = target_table.Trim();
+                    }
+                    using (MySqlCommand command = connection.CreateCommand())
+                    {
+                        command.CommandText = "TRUNCATE TABLE " + target_table + ";";
+                        command.ExecuteNonQuery();
+                    }
+
+                    foreach (DataRow row in table.Rows)
+                    {
+                        string query = ConstructInsertUpdateQuery(source_type, target_table, table.Columns, row, primary_key);
+
+                        using (MySqlCommand command = new MySqlCommand(query, connection))
+                        {
+                            foreach (DataColumn column in table.Columns)
+                            {
+                                command.Parameters.AddWithValue($"@{column.ColumnName}", row[column]);
+                            }
+
+                            command.ExecuteNonQuery();
+                        }
+
+                    }
+                }
+
+                connection.Close();
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message, ex);
+            }
+        }
+
+        #endregion
+
+        #region Build The Insert/Update Query
+        public static string ConstructInsertUpdateQuery(string source_dbtype, string tableName, DataColumnCollection columns, DataRow row, string primary_key)
+        {
+            //Step 1
+            //string columnNames = string.Join(", ", columns.Cast<DataColumn>().Select(c => c.ColumnName));
+            //string parameterNames = string.Join(", ", columns.Cast<DataColumn>().Select(c => $"@{c.ColumnName}"));
+            //return $"INSERT INTO {tableName} ({columnNames}) VALUES ({parameterNames})";
+
+            //Step 2
+
+            var primaryKeyColumnName = primary_key; // Replace with your actual primary key column name
+
+            string columnNames = string.Join(", ", columns.Cast<DataColumn>().Select(c => c.ColumnName));
+            string parameterNames = string.Join(", ", columns.Cast<DataColumn>().Select(c => $"@{c.ColumnName}"));
+            string query = "";
+            //if (source_dbtype == "Mysql")
+            //{
+            var updateColumns = columns.Cast<DataColumn>()
+                                    .Where(c => c.ColumnName != primaryKeyColumnName)
+                                    .Select(c => $"{c.ColumnName} = VALUES({c.ColumnName})");
+
+            query = $@" INSERT INTO {tableName} ({columnNames}) 
+                            VALUES ({parameterNames}) 
+                            ON DUPLICATE KEY UPDATE 
+                            {string.Join(", ", updateColumns)};";
+            //}
+            //else if (source_dbtype == "Postgres")
+            //{
+            //    var updateColumns = columns.Cast<DataColumn>()
+            //                .Where(c => c.ColumnName != primaryKeyColumnName)
+            //                .Select(c => $"{c.ColumnName} = EXCLUDED.{c.ColumnName}");
+
+            //    query = $@" INSERT INTO {tableName} ({columnNames}) 
+            //                VALUES ({parameterNames}) 
+            //                ON CONFLICT ({primaryKeyColumnName}) DO UPDATE
+            //                SET {string.Join(", ", updateColumns)};";
+            //}
+            return query;
+
+        }
+        #endregion
+
+        #region Csv Data Push
+        [HttpPost]
+        public DataSet CsvToDataSet_old(string pipelinecode, string rawFilePath)
+        {
+            DataSet ds = new DataSet();
+            string dataset_code = "";
+            string[] parts = rawFilePath.Split('.');
+            string fileExtension = "." + parts.Last();
+
+            if (fileExtension != ".csv")
+            {
+                throw new Exception("Unsupported file type. Please upload a CSV file.");
+            }
+
+            try
+            {
+
+                var bcpcolumns = (from a in dbContext.con_trn_tpplsourcefield
+                                  where a.pipeline_code == pipelinecode
+                                  where (a.sourcefieldmapping_flag == "Y" || a.source_type == "Expression")
+                                  where a.delete_flag == "N"
+                                  orderby a.dataset_table_field_sno
+                                  select new
+                                  {
+                                      a.sourcefield_sno,
+                                      a.sourcefield_name,
+                                      a.sourcefield_datatype,
+                                      a.dataset_table_field,
+                                      a.source_type
+                                  }).ToList(); // Execute query immediately
+
+                var sourcecolumns = (from a in dbContext.con_trn_tpplsourcefield
+                                     where a.pipeline_code == pipelinecode
+                                     where a.source_type != "Expression"
+                                     where a.delete_flag == "N"
+                                     orderby a.sourcefield_sno
+                                     select new
+                                     {
+                                         a.sourcefield_name,
+                                         a.sourcefield_sno
+                                     }).ToList();
+
+                var ppl_dscode = dbContext.con_mst_tpipeline
+                                   .Where(p => p.pipeline_code == pipelinecode && p.pipeline_status == "Active" && p.delete_flag == "N")
+                                   .Select(a => new
+                                   {
+                                       a.target_dataset_code
+                                   }).FirstOrDefault();
+                dataset_code = ppl_dscode?.target_dataset_code;
+
+                // Inclusion condition Apply
+                var filtercond = dbContext.con_trn_tpplcondition
+                                 .Where(p => p.pipeline_code == pipelinecode
+                                             && (p.condition_type == "Filter")
+                                             && p.delete_flag == "N")
+                                 .Select(a => new
+                                 {
+                                     condition_text = a.condition_text
+                                 }).ToList();
+
+                string query1 = filtercond.Any() && !string.IsNullOrEmpty(filtercond[0].condition_text)
+                    ? " AND (" + filtercond[0].condition_text + ")"
+                    : "";
+
+                // Exclusion condition Apply
+                var rejectioncond = dbContext.con_trn_tpplcondition
+                                   .Where(p => p.pipeline_code == pipelinecode
+                                               && (p.condition_type == "Rejection")
+                                               && p.delete_flag == "N")
+                                   .Select(a => new
+                                   {
+                                       condition_text = a.condition_text
+                                   }).ToList();
+
+                bool mdf_flag = false;
+
+                if (rejectioncond.Any() && !string.IsNullOrEmpty(rejectioncond[0].condition_text) && !mdf_flag)
+                {
+                    string modifiedCondition = rejectioncond[0].condition_text;
+                    if (modifiedCondition.Contains("="))
+                    {
+                        modifiedCondition = modifiedCondition.Replace("=", "<>");
+                    }
+                    else if (modifiedCondition.Contains(">"))
+                    {
+                        modifiedCondition = modifiedCondition.Replace(">", "<");
+                    }
+                    else if (modifiedCondition.Contains("<"))
+                    {
+                        modifiedCondition = modifiedCondition.Replace("<", ">");
+                    }
+
+                    if (!string.IsNullOrEmpty(modifiedCondition))
+                    {
+                        query1 += " AND (" + modifiedCondition + ")";
+                        mdf_flag = true;
+                    }
+                }
+
+                using (var reader = new StreamReader(rawFilePath))
+                using (var csv = new CsvReader(reader, new CsvConfiguration(CultureInfo.InvariantCulture)
+                {
+                    HasHeaderRecord = true,
+                    MissingFieldFound = null
+                }))
+                {
+                    // Read the header first
+                    csv.Read();
+                    csv.ReadHeader();
+
+                    // Create DataTable
+                    DataTable dt = new DataTable();
+
+                    // Add columns to DataTable based on expected source columns
+                    foreach (var item in bcpcolumns)
+                    {
+                        dt.Columns.Add(item.sourcefield_name);
+                    }
+
+                    // Read the records
+                    while (csv.Read())
+                    {
+                        DataRow newRow = dt.NewRow();
+                        for (int i = 0; i < bcpcolumns.Count; i++)
+                        {
+                            string columnName = bcpcolumns[i].sourcefield_name;
+
+                            // Get the value by the column name
+                            var value = csv.GetField(columnName);
+
+                            // Handle different data types if needed
+                            if (string.IsNullOrEmpty(value))
+                            {
+                                newRow[i] = DBNull.Value; // Set to DBNull if value is empty
+                            }
+                            else
+                            {
+                                newRow[i] = value; // Set the cell value
+                            }
+                        }
+                        dt.Rows.Add(newRow); // Add the new row to the DataTable
+                    }
+
+                    // Filter rows based on query
+                    var filteredRows = dt.Select("1 = 1 " + query1);
+                    DataTable filteredDt = filteredRows.Any() ? filteredRows.CopyToDataTable() : dt.Clone();
+
+                    ds.Tables.Add(filteredDt);
+                }
+
+                // Move processed file if required
+                string directory = Path.GetDirectoryName(rawFilePath); // Extract directory path
+
+                if (directory == v_filepath.TrimEnd('\\'))
+                {
+                    //MovetheProcessedfile(rawFilePath, comp_file_path, sched_gid.ToString());
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+
+            return ds;
+        }
+
+        [HttpPost]
+        public async Task<DataSet> CsvToDataSet(string pipelinecode, string rawFilePath, string datasetcode = "")
+        {
+            DataSet ds = new DataSet();
+            string dataset_code = "";
+            ppl_code = pipelinecode;
+            var query1 = "";
+
+            //Getting mapped columns srcfieldname,srctype,slno from the rawexcel
+            var bcpcolumns = (from a in dbContext.con_trn_tpplsourcefield
+                              where a.pipeline_code == pipelinecode
+                              where a.dataset_code == datasetcode
+                              where (a.sourcefieldmapping_flag == "Y" || a.source_type == "Expression")
+                              where a.delete_flag == "N"
+                              orderby a.dataset_table_field_sno
+                              select new
+                              {
+                                  a.sourcefield_sno,
+                                  a.sourcefield_name,
+                                  a.sourcefield_datatype,
+                                  a.dataset_table_field,
+                                  a.source_type
+                              }).ToList(); // Execute query immediately
+
+            //Getting Src Column from  con_trn_tpplsourcefield
+            var sourcecolumns = (from a in dbContext.con_trn_tpplsourcefield
+                                 where a.pipeline_code == pipelinecode
+                                 where a.dataset_code == datasetcode
+                                 where a.source_type != "Expression"
+                                 where a.delete_flag == "N"
+                                 orderby a.sourcefield_sno
+                                 select new
+                                 {
+                                     a.sourcefield_name,
+                                     a.sourcefield_sno
+                                 }).ToList();
+
+            //Muthu Changes 04-07-2025
+            /* var ppl_dscode = dbContext.con_mst_tpipeline
+                                .Where(p => p.pipeline_code == pipelinecode && p.pipeline_status == "Active" && p.delete_flag == "N")
+                                .Select(a => new
+                                {
+                                    a.target_dataset_code
+                                }).FirstOrDefault();
+             dataset_code = ppl_dscode?.target_dataset_code;*/
+
+            var ppl_dscode = datasetcode;
+
+            // Inclusion condition Apply
+            var filtercond = dbContext.con_trn_tpplcondition
+                             .Where(p => p.pipeline_code == pipelinecode
+                                         && p.dataset_code == datasetcode
+                                         && (p.condition_type == "Filter")
+                                         && p.delete_flag == "N")
+                             .Select(a => new
+                             {
+                                 condition_text = a.condition_text
+                             }).ToList();
+
+            if (filtercond.Any() && !string.IsNullOrEmpty(filtercond[0].condition_text))
+            {
+                query1 = " and (" + filtercond[0].condition_text + ")";
+            }
+
+            // Exclusion condition Apply
+            var rejectioncond = dbContext.con_trn_tpplcondition
+                               .Where(p => p.pipeline_code == pipelinecode
+                                            && p.dataset_code == datasetcode
+                                           && (p.condition_type == "Rejection")
+                                           && p.delete_flag == "N")
+                               .Select(a => new
+                               {
+                                   condition_text = a.condition_text
+                               }).ToList();
+
+            bool mdf_flag = false;
+
+            if (rejectioncond.Any() && !string.IsNullOrEmpty(rejectioncond[0].condition_text) && !mdf_flag)
+            {
+                string modifiedCondition = rejectioncond[0].condition_text;
+                if (rejectioncond[0].condition_text.Contains("="))
+                {
+                    modifiedCondition = rejectioncond[0].condition_text.Replace("=", "<>");
+                }
+                else if (rejectioncond[0].condition_text.Contains(">"))
+                {
+                    modifiedCondition = rejectioncond[0].condition_text.Replace(">", "<");
+                }
+                else if (rejectioncond[0].condition_text.Contains("<"))
+                {
+                    modifiedCondition = rejectioncond[0].condition_text.Replace("<", ">");
+                }
+
+                if (!string.IsNullOrEmpty(modifiedCondition))
+                {
+                    query1 += " and (" + modifiedCondition + ")";
+                    mdf_flag = true;
+                }
+            }
+
+            // csvheader condition Apply
+            var csvheader = await dbContext.con_trn_tpplcsvheader
+                             .Where(p => p.pipeline_code == pipelinecode
+                                         // && p.dataset_code == datasetcode
+                                         && p.delete_flag == "N")
+                             .Select(a => new
+                             {
+                                 column_separator = a.column_separator,
+                                 number_ofcolumns = a.number_ofcolumns,
+                                 csvfile_dateformat = a.csvfile_dateformat,
+                                 csvfile_datetimeformat = a.csvfile_datetimeformat,
+                                 number_oflines_toskip = a.number_oflines_toskip
+                             }).ToListAsync();
+
+            column_separator = csvheader[0].column_separator.ToString();
+
+            string fileExtension = rawFilePath.Substring(rawFilePath.LastIndexOf('.'));
+            if (fileExtension != ".csv")
+            {
+                throw new Exception("Unsupported file type. Please upload a CSV file.");
+            }
+
+            try
+            {
+                DataTable dt = new DataTable();
+                using (StreamReader sr = new StreamReader(rawFilePath))
+                {
+                    // Read the first line for column headers
+                    string[] headers = sr.ReadLine().Split(column_separator);
+                    foreach (string header in headers)
+                    {
+                        dt.Columns.Add(header);
+                    }
+
+                    // Read the remaining lines for rows
+                    while (!sr.EndOfStream)
+                    {
+                        string[] rows = sr.ReadLine().Split(column_separator);
+                        DataRow dr = dt.NewRow();
+                        for (int i = 0; i < headers.Length; i++)
+                        {
+                            dr[i] = rows[i];
+                        }
+                        dt.Rows.Add(dr);
+                    }
+                }
+
+                // Add the DataTable to the DataSet
+                //ds.Tables.Add(dt);
+                var filteredRows = dt.Select("1 = 1 " + query1);
+                DataTable filteredDt = filteredRows.Any() ? filteredRows.CopyToDataTable() : dt.Clone();
+
+                ds.Tables.Add(filteredDt);
+
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+
+            return ds;
+        }
+        public async Task<string> CsvDataToCsvtable(DataTable dt, string pipelinecode, string datasetcode = "")
+        {
+            string CSVTableName = "con_trn_tcsv";
+
+            // Create a MySqlConnection using the connection string
+            using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+            {
+                var pplcode = pipelinecode;
+
+                if (connect.State != ConnectionState.Open)
+                    connect.Open();
+
+                var shdgid = dbContext.con_trn_tscheduler
+                      .Where(p => p.pipeline_code == pipelinecode
+                              //&& p.scheduler_status == "Scheduled")
+                              && p.dataset_code == datasetcode
+                              && p.scheduler_status == "Scheduled" || p.scheduler_status == "Locked")
+                      .Select(a => new
+                      {
+                          scheduler_gid = a.scheduler_gid
+                      })
+                      .ToList();
+
+                try
+                {
+
+                    if (shdgid.Count > 0)
+                    {
+                        sched_gid = shdgid[0].scheduler_gid;
+                        await UpdateScheduler(sched_gid, "Initiated", "System");
+
+                        csvfilePath = csvfilePath + sched_gid + ".csv";
+                        // Create the directory if it doesn't exist
+                        string directory = System.IO.Path.GetDirectoryName(csvfilePath);
+                        // Create the folder if it doesn't exist.
+                        if (!Directory.Exists(directory))
+                        {
+                            Directory.CreateDirectory(directory);
+                        }
+
+                        // Check if the file exists, if not, create the file
+                        if (!System.IO.File.Exists(csvfilePath))
+                        {
+                            using (FileStream fs = System.IO.File.Create(csvfilePath))
+                            {
+
+                            }
+                            // Create a StreamWriter to write the CSV file
+                            using (StreamWriter writer = new StreamWriter(csvfilePath))
+                            {
+                                // Write the column headers
+                                foreach (DataColumn column in dt.Columns)
+                                {
+                                    writer.Write(column.ColumnName);
+                                    if (column.Ordinal < dt.Columns.Count - 1)
+                                    {
+                                        writer.Write(column_separator);
+                                    }
+                                }
+                                writer.WriteLine();
+
+                                // Write the data rows
+                                foreach (DataRow row in dt.Rows)
+                                {
+                                    for (int i = 0; i < dt.Columns.Count; i++)
+                                    {
+                                        writer.Write(row[i].ToString().Trim().Replace("\n", "").Replace("\r", " "));
+                                        if (i < dt.Columns.Count - 1)
+                                        {
+                                            writer.Write(column_separator);
+                                        }
+                                    }
+                                    writer.WriteLine();
+                                }
+                                writer.Close();
+                            }
+                        }
+                        var csvheader = await dbContext.con_trn_tpplcsvheader
+                            .Where(p => p.pipeline_code == pipelinecode
+                                        // && p.dataset_code == datasetcode
+                                        && p.delete_flag == "N")
+                            .Select(a => new
+                            {
+                                column_separator = a.column_separator,
+                                number_ofcolumns = a.number_ofcolumns,
+                                csvfile_dateformat = a.csvfile_dateformat,
+                                csvfile_datetimeformat = a.csvfile_datetimeformat,
+                                number_oflines_toskip = a.number_oflines_toskip
+                            }).ToListAsync();
+
+
+                        var srcfiledheader = await dbContext.con_trn_tpplsourcefield
+                                            .Where(p => p.pipeline_code == pipelinecode
+                                                        && p.dataset_code == datasetcode
+                                                        && p.delete_flag == "N" && p.source_type == "CSV")
+                                            .Select(a => new
+                                            {
+                                                sourcefield_name = a.sourcefield_name,
+                                                sourcefield_sno = a.sourcefield_sno,
+                                                sourcefield_datatype = a.sourcefield_datatype
+                                            }).OrderBy(a => a.sourcefield_sno)
+                                            .ToListAsync();
+
+                        var dtColumnNames = dt.Columns.Cast<DataColumn>().Select(c => c.ColumnName).ToList();
+                        var number_ofcolumns = Convert.ToInt64(csvheader[0].number_ofcolumns);
+                        var srcFieldNames = srcfiledheader.Select(f => f.sourcefield_name).ToList();
+
+                        if (dtColumnNames.Count != srcFieldNames.Count || number_ofcolumns != srcFieldNames.Count || number_ofcolumns != dtColumnNames.Count)
+                        {
+                            throw new Exception("Mismatch in CSV column count.!");
+                        }
+
+                        //else
+                        //{
+                        //for (int i = 0; i < dtColumnNames.Count; i++)
+                        //{
+                        //    if (!dtColumnNames[i].Trim().Equals(srcFieldNames[i].Trim(), StringComparison.OrdinalIgnoreCase))
+                        //    {
+                        //        throw new Exception("CSV Header Mismatch.!");
+                        //    }
+                        //}
+                        //}
+
+                        //connect.Open();
+                        var bulkLoader = new MySqlBulkLoader(connect)
+                        {
+                            Expressions =  {
+                                    "scheduler_gid =" + sched_gid,
+                               },
+                            TableName = CSVTableName, // Replace with your target table name
+                            FieldTerminator = csvheader[0].column_separator,         // CSV field delimiter
+                            LineTerminator = lineterm,         // CSV line terminator
+                            FileName = csvfilePath,
+                            NumberOfLinesToSkip = csvheader[0].number_oflines_toskip,      // Skip the header row if necessary
+                            CharacterSet = "utf8",   // Set the character set
+                            Local = true,
+                            Timeout = 0
+                        };
+
+                        List<string> bcpcolumn = new List<string>();
+
+                        for (int i = 1; dt.Columns.Count >= i; i++)
+                        {
+                            bcpcolumn.Add("col" + i);
+                        }
+                        bulkLoader.Columns.AddRange(bcpcolumn);
+                        int rowsAffected = bulkLoader.Load();
+                        MySqlCommand command = connect.CreateCommand();
+                        command.CommandType = CommandType.StoredProcedure;
+                        command.CommandText = "pr_con_csvtobcp";
+                        command.CommandTimeout = 0;
+                        command.Parameters.AddWithValue("in_pipeline_code", pipelinecode);
+                        command.Parameters.AddWithValue("in_dataset_code", datasetcode);
+                        command.Parameters.AddWithValue("in_scheduler_gid", sched_gid);
+                        await command.ExecuteNonQueryAsync();
+                        connect.Close();
+
+                        return (sched_gid.ToString());
+                    }
+                    else
+                    {
+                        return ("This Pipeline is not scheduled..!");
+                    }
+                }
+
+                catch (Exception ex)
+                {
+                    //Trace Error
+                    var errorLog = new ErrorLog
+                    {
+                        in_errorlog_pipeline_code = ppl_code,
+                        in_errorlog_scheduler_gid = sched_gid,
+                        in_errorlog_type = "Catch - Method Name : CsvDataToCsvtable",
+                        in_errorlog_exception = ex.Message,
+                        in_created_by = initiated_by
+                    };
+                    Errorlog(errorLog);
+
+                    UpdateScheduler(sched_gid, "Failed", "System");
+
+                    return ex.Message.ToString();
+
+                }
+
+            }
+            ;
+        }
+        public async Task<string> CsvDataToCsvtable_old(DataTable dt, string pipelinecode)
+        {
+            string CSVTableName = "con_trn_tcsv";
+
+            // Create a MySqlConnection using the connection string
+            using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+            {
+                var pplcode = pipelinecode;
+                var rawFilePath = uploadfilepath + sched_gid + ".csv";
+
+                if (connect.State != ConnectionState.Open)
+                    connect.Open();
+
+                var shdgid = dbContext.con_trn_tscheduler
+                      .Where(p => p.pipeline_code == pipelinecode
+                              //&& p.scheduler_status == "Scheduled")
+                              && p.scheduler_status == "Scheduled" || p.scheduler_status == "Locked")
+                      .Select(a => new
+                      {
+                          scheduler_gid = a.scheduler_gid
+                      })
+                      .ToList();
+
+                try
+                {
+
+                    if (shdgid.Count > 0)
+                    {
+                        sched_gid = shdgid[0].scheduler_gid;
+                        await UpdateScheduler(sched_gid, "Initiated", "System");
+
+                        // csvheader condition Apply
+                        var csvheader = await dbContext.con_trn_tpplcsvheader
+                                         .Where(p => p.pipeline_code == pipelinecode
+                                                     && p.delete_flag == "N")
+                                         .Select(a => new
+                                         {
+                                             column_separator = a.column_separator,
+                                             number_ofcolumns = a.number_ofcolumns,
+                                             csvfile_dateformat = a.csvfile_dateformat,
+                                             csvfile_datetimeformat = a.csvfile_datetimeformat,
+                                             number_oflines_toskip = a.number_oflines_toskip
+                                         }).ToListAsync();
+
+                        var srcfiledheader = await dbContext.con_trn_tpplsourcefield
+                                            .Where(p => p.pipeline_code == pipelinecode && p.delete_flag == "N" && p.source_type == "CSV")
+                                            .Select(a => new
+                                            {
+                                                sourcefield_name = a.sourcefield_name,
+                                                sourcefield_sno = a.sourcefield_sno,
+                                                sourcefield_datatype = a.sourcefield_datatype
+                                            }).OrderBy(a => a.sourcefield_sno)
+                                            .ToListAsync();
+
+                        var dtColumnNames = dt.Columns.Cast<DataColumn>().Select(c => c.ColumnName).ToList();
+                        var srcFieldNames = srcfiledheader.Select(f => f.sourcefield_name).ToList();
+
+                        if (dtColumnNames.Count != srcFieldNames.Count)
+                        {
+                            throw new Exception("Mismatch in CSV column count.!");
+                        }
+
+                        //else
+                        //{
+                        //for (int i = 0; i < dtColumnNames.Count; i++)
+                        //{
+                        //    if (!dtColumnNames[i].Trim().Equals(srcFieldNames[i].Trim(), StringComparison.OrdinalIgnoreCase))
+                        //    {
+                        //        throw new Exception("CSV Header Mismatch.!");
+                        //    }
+                        //}
+                        //}
+
+                        //connect.Open();
+                        var bulkLoader = new MySqlBulkLoader(connect)
+                        {
+                            Expressions =  {
+                                    "scheduler_gid =" + sched_gid,
+                               },
+                            TableName = CSVTableName, // Replace with your target table name
+                            FieldTerminator = csvheader[0].column_separator,         // CSV field delimiter
+                            LineTerminator = lineterm,         // CSV line terminator
+                            FileName = rawFilePath,
+                            NumberOfLinesToSkip = csvheader[0].number_oflines_toskip,      // Skip the header row if necessary
+                            CharacterSet = "utf8",   // Set the character set
+                            Local = true,
+                            Timeout = 0
+                        };
+
+                        List<string> bcpcolumn = new List<string>();
+
+                        for (int i = 1; dt.Columns.Count >= i; i++)
+                        {
+                            bcpcolumn.Add("col" + i);
+                        }
+                        bulkLoader.Columns.AddRange(bcpcolumn);
+                        int rowsAffected = bulkLoader.Load();
+                        MySqlCommand command = connect.CreateCommand();
+                        command.CommandType = CommandType.StoredProcedure;
+                        command.CommandText = "pr_con_csvtobcp";
+                        command.CommandTimeout = 0;
+                        command.Parameters.AddWithValue("in_pipeline_code", pipelinecode);
+                        command.Parameters.AddWithValue("in_scheduler_gid", sched_gid);
+                        await command.ExecuteNonQueryAsync();
+                        connect.Close();
+
+                        return (sched_gid.ToString());
+                    }
+                    else
+                    {
+                        return ("This Pipeline is not scheduled..!");
+                    }
+                }
+
+                catch (Exception ex)
+                {
+                    //Trace Error
+                    var errorLog = new ErrorLog
+                    {
+                        in_errorlog_pipeline_code = ppl_code,
+                        in_errorlog_scheduler_gid = sched_gid,
+                        in_errorlog_type = "Catch - Method Name : CsvDataToCsvtable",
+                        in_errorlog_exception = ex.Message,
+                        in_created_by = initiated_by
+                    };
+                    Errorlog(errorLog);
+
+                    UpdateScheduler(sched_gid, "Failed", "System");
+
+                    return ex.Message.ToString();
+
+                }
+
+            }
+            ;
+        }
+
+        public async Task<string> CSVdatapush(int scheduler_gid)
+        {
+            string msg = "";
+            DataSet dataSet = null;
+            try
+            {
+                //Get Pipeline codeagainst scheduler id
+                var schldpplcode = dbContext.con_trn_tscheduler
+                          .Where(a => a.scheduler_gid == scheduler_gid
+                                 //&& a.scheduler_status == "Scheduled"
+                                 && a.scheduler_status == "Scheduled" || a.scheduler_status == "Locked"
+
+                          && a.delete_flag == "N")
+                          .Select(a => new
+                          {
+                              scheduler_gid = a.scheduler_gid,
+                              pipeline_code = a.pipeline_code,
+                              dataset_code = a.dataset_code,
+                              Rawfilepath = a.file_path
+                          }).OrderByDescending(a => a.scheduler_gid)
+                          .FirstOrDefault();
+
+                if (schldpplcode != null)
+                {
+
+                    // Call the FieldmappingDT method
+                    DataTable dataTable = FieldmappingDT(schldpplcode.pipeline_code, schldpplcode.dataset_code).Result;
+                    if (dataTable.Rows.Count <= 0)
+                    {
+                        UpdateScheduler(scheduler_gid, "Failed", "System");
+                        return "Fieldmapping is not done for this pipeline...";
+                    }
+
+                    sched_gid = scheduler_gid;
+
+                    //Get dataset 
+                    dataSet = await CsvToDataSet(schldpplcode.pipeline_code, schldpplcode.Rawfilepath, schldpplcode.dataset_code);
+                    msg = await CsvDataToCsvtable(dataSet.Tables[0], schldpplcode.pipeline_code, schldpplcode.dataset_code);
+
+                    int dtrow_count = dataTable.Rows.Count;
+                    if (msg == "")
+                    {
+                        msg = sched_gid.ToString();
+                    }
+                }
+                else
+                {
+
+                    msg = "This Pipeline is not scheduled..!";
+                }
+
+            }
+            catch (Exception ex)
+            {
+                //Trace Error
+                var errorLog = new ErrorLog
+                {
+                    in_errorlog_pipeline_code = ppl_code,
+                    in_errorlog_scheduler_gid = scheduler_gid,
+                    in_errorlog_type = "Catch - Method Name : CSVdatapush",
+                    in_errorlog_exception = ex.Message,
+                    in_created_by = initiated_by
+                };
+                Errorlog(errorLog);
+                UpdateScheduler(scheduler_gid, "Failed", "System");
+                return "Error: " + ex.Message;
+            }
+            return msg;
+        }
+
+        #endregion
+
+        #region Excel Data push
+        //public string Exceldatapush(string pipeline_code, string Rawfilepath)
+        public async Task<string> Exceldatapush(int scheduler_gid, string dataset_code)
+        {
+            string msg = "";
+            DataSet dataSet = null;
+
+            //try
+            //{
+                //Get Pipeline codeagainst scheduler id
+                var schldpplcode = dbContext.con_trn_tscheduler
+                      .Where(a => a.scheduler_gid == scheduler_gid
+                             //&& a.scheduler_status == "Scheduled"
+                             && a.scheduler_status == "Scheduled" || a.scheduler_status == "Locked"
+
+                      && a.delete_flag == "N")
+                      .Select(a => new
+                      {
+                          scheduler_gid = a.scheduler_gid,
+                          pipeline_code = a.pipeline_code,
+                          Rawfilepath = a.file_path
+                      }).OrderByDescending(a => a.scheduler_gid)
+                      .FirstOrDefault();
+
+                if (schldpplcode != null)
+                {
+
+                    // Call the FieldmappingDT method
+                    DataTable dataTable = FieldmappingDT(schldpplcode.pipeline_code, dataset_code).Result;
+                    if (dataTable.Rows.Count <= 0)
+                    {
+                        // logger("After FieldmappingDT");
+                        UpdateScheduler(scheduler_gid, "Failed", "System");
+                        return "Fieldmapping is not done for this pipeline...";
+                    }
+
+                    sched_gid = scheduler_gid;
+
+                    //Get dataset 
+                    dataSet = ExcelToDataSet(schldpplcode.pipeline_code, schldpplcode.Rawfilepath, dataset_code);
+                    errormsg = "Step 8 After Excelto Dataset: 7237" + dataSet.Tables.Count;
+                    System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                    int dtrow_count = dataTable.Rows.Count;
+
+                    msg = DatatableToCSV(dataSet.Tables[0], schldpplcode.pipeline_code, dataset_code);
+                }
+                else
+                {
+                    msg = "This Pipeline is not scheduled..!";
+                }
+            //}
+            //catch (Exception ex)
+            //{
+            //    var errorLog = new ErrorLog
+            //    {
+            //        in_errorlog_pipeline_code = ppl_code,
+            //        in_errorlog_scheduler_gid = scheduler_gid,
+            //        in_errorlog_type = "Catch - Method Name : Exceldatapush",
+            //        in_errorlog_exception = ex.Message,
+            //        in_created_by = initiated_by
+            //    };
+            //    Errorlog(errorLog);
+            //    UpdateScheduler(scheduler_gid, "Failed", "System");
+            //    msg = "Error: " + ex.Message;
+            //}
+
+            return msg;
+        }
+
+        [HttpPost]
+        public async Task<DataTable> FieldmappingDT(string pipelinecode, string datasetcode = "")
+        {
+            DataTable dataTable = new DataTable();
+
+            //try
+            //{
+                /*var ds1 = dbContext.con_mst_tpipeline
+             .Where(p => p.pipeline_code == pipelinecode && p.delete_flag == "N")
+             .Select(p => new Pipeline
+             {
+                 target_dataset_code = p.target_dataset_code,
+             })
+             .SingleOrDefault();*/
+
+                var ds_code = await dbContext.con_trn_tpplsourcefield
+                .Where(a => a.pipeline_code == pipelinecode
+                && a.dataset_code == datasetcode
+                && a.source_type != "Expression"
+                && a.delete_flag == "N")
+                .Select(a => new
+                {
+                    //dataset_field_name = a.dataset_field_name,
+                    ppl_field_name = a.sourcefield_name
+                }).ToListAsync();
+
+                // Define the columns in the DataTable
+                dataTable.Columns.Add("ppl_field_name");
+                dataTable.Columns.Add("default_value");
+
+                // Populate the DataTable with data from the query
+                foreach (var item in ds_code)
+                {
+                    DataRow row = dataTable.NewRow();
+                    row["ppl_field_name"] = item.ppl_field_name;
+                    //row["default_value"] = item.default_value;
+                    dataTable.Rows.Add(row);
+                }
+                errormsg = "Step 9 After Excelto Dataset: 5652";
+                System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+            //}
+            //catch (Exception ex)
+            //{
+            //    //Trace Error
+            //    var errorLog = new ErrorLog
+            //    {
+            //        in_errorlog_pipeline_code = ppl_code,
+            //        in_errorlog_scheduler_gid = sched_gid,
+            //        in_errorlog_type = "Catch - Method Name : FieldmappingDT",
+            //        in_errorlog_exception = ex.Message,
+            //        in_created_by = initiated_by
+            //    };
+            //    Errorlog(errorLog);
+            //    // Handle any exceptions here
+            //    UpdateScheduler(sched_gid, "Failed", "System");
+            //}
+            return dataTable;
+        }
+
+        //[HttpPost]
+        //public DataSet ExcelToDataSet_old(string pipelinecode, string rawFilePath, string datasetcode = "")
+        //{
+        //    string fileExtension = "";
+        //    string query = "";
+        //    //string[] parts = rawFilePath.Split('.');
+        //    //fileExtension = "." + parts.Last();
+        //    fileExtension = rawFilePath.Substring(rawFilePath.LastIndexOf('.'));
+        //    DataSet ds = new DataSet();
+        //    string dataset_code = "";
+        //    ppl_code = pipelinecode;
+        //    //try
+        //    //{
+        //    var query1 = "";
+        //    //Getting mapped columns srcfieldname,srctype,slno from the rawexcel
+        //    var bcpcolumns = (from a in dbContext.con_trn_tpplsourcefield
+        //                      where a.pipeline_code == pipelinecode
+        //                      where a.dataset_code == datasetcode
+        //                      where (a.sourcefieldmapping_flag == "Y" || a.source_type == "Expression")
+        //                      where a.delete_flag == "N"
+        //                      orderby a.dataset_table_field_sno
+        //                      select new
+        //                      {
+        //                          a.sourcefield_sno,
+        //                          a.sourcefield_name,
+        //                          a.sourcefield_datatype,
+        //                          a.dataset_table_field,
+        //                          a.source_type
+        //                      }).ToList(); // Execute query immediately
+
+        //    //Getting Src Column from  con_trn_tpplsourcefield
+        //    var sourcecolumns = (from a in dbContext.con_trn_tpplsourcefield
+        //                         where a.pipeline_code == pipelinecode
+        //                         where a.dataset_code == datasetcode
+        //                         where a.source_type != "Expression"
+        //                         where a.delete_flag == "N"
+        //                         orderby a.sourcefield_sno
+        //                         select new
+        //                         {
+        //                             a.sourcefield_name,
+        //                             a.sourcefield_sno
+        //                         }).ToList();
+
+        //    //var ppl_dscode = dbContext.con_mst_tpipeline
+        //    //                   .Where(p => p.pipeline_code == pipelinecode && p.pipeline_status == "Active" && p.delete_flag == "N")
+        //    //                   .Select(a => new
+        //    //                   {
+        //    //                       a.target_dataset_code
+        //    //                   }).FirstOrDefault();
+        //    //dataset_code = ppl_dscode?.target_dataset_code;
+
+        //    // GetSheet name
+
+        //    string excel_sheetName = dbContext.con_mst_tpipeline
+        //        .Where(p => p.pipeline_code == pipelinecode && p.pipeline_status == "Active" && p.delete_flag == "N")
+        //        .Select(a => a.sheet_name)
+        //        .FirstOrDefault();
+
+        //    dataset_code = datasetcode;
+
+        //    // Inclusion condition Apply
+        //    var filtercond = dbContext.con_trn_tpplcondition
+        //                     .Where(p => p.pipeline_code == pipelinecode
+        //                                 && p.dataset_code == datasetcode
+        //                                 && (p.condition_type == "Filter")
+        //                                 && p.delete_flag == "N")
+        //                     .Select(a => new
+        //                     {
+        //                         condition_text = a.condition_text
+        //                     }).ToList();
+
+        //    if (filtercond.Any() && !string.IsNullOrEmpty(filtercond[0].condition_text))
+        //    {
+        //        query1 = " and (" + filtercond[0].condition_text + ")";
+        //    }
+
+        //    // Exclusion condition Apply
+        //    var rejectioncond = dbContext.con_trn_tpplcondition
+        //                       .Where(p => p.pipeline_code == pipelinecode
+        //                                   && p.dataset_code == datasetcode
+        //                                   && (p.condition_type == "Rejection")
+        //                                   && p.delete_flag == "N")
+        //                       .Select(a => new
+        //                       {
+        //                           condition_text = a.condition_text
+        //                       }).ToList();
+
+        //    bool mdf_flag = false;
+
+        //    if (rejectioncond.Any() && !string.IsNullOrEmpty(rejectioncond[0].condition_text) && !mdf_flag)
+        //    {
+        //        string modifiedCondition = rejectioncond[0].condition_text;
+        //        if (rejectioncond[0].condition_text.Contains("="))
+        //        {
+        //            modifiedCondition = rejectioncond[0].condition_text.Replace("=", "<>");
+        //        }
+        //        else if (rejectioncond[0].condition_text.Contains(">"))
+        //        {
+        //            modifiedCondition = rejectioncond[0].condition_text.Replace(">", "<");
+        //        }
+        //        else if (rejectioncond[0].condition_text.Contains("<"))
+        //        {
+        //            modifiedCondition = rejectioncond[0].condition_text.Replace("<", ">");
+        //        }
+
+        //        if (!string.IsNullOrEmpty(modifiedCondition))
+        //        {
+        //            query1 += " and (" + modifiedCondition + ")";
+        //            mdf_flag = true;
+        //        }
+        //    }
+
+        //    string excelConnectionString = "";
+
+        //    if (fileExtension == ".xls" || fileExtension == ".xlsx")
+        //    {
+
+        //        using (var workbook = new XLWorkbook(rawFilePath))
+        //        {
+        //            // var worksheet = workbook.Worksheets.FirstOrDefault();
+        //            var worksheet = workbook.Worksheet(excel_sheetName);
+        //            if (worksheet != null)
+        //            {
+        //                // column header validation
+        //                foreach (var items in sourcecolumns)
+        //                {
+        //                    if (worksheet.Cell(1, items.sourcefield_sno).GetValue<string>().ToLower().Trim() != items.sourcefield_name.ToLower().Trim())
+        //                    {
+        //                        throw new Exception("File Header Name Missmatch !");
+        //                    }
+        //                }
+
+        //                // Read all column headers from the worksheet (assuming headers are in the first row)
+        //                //var worksheetHeaders = new HashSet<string>();
+
+        //                //int totalColumns = worksheet.ColumnsUsed().Count();
+        //                //for (int col1 = 1; col1 <= totalColumns; col1++)
+        //                //{
+        //                //    string header = worksheet.Cell(1, col1).GetValue<string>().Trim().ToLower();
+        //                //    worksheetHeaders.Add(header);
+        //                //}
+
+        //                //// Validate if all expected headers exist in the worksheet
+        //                //foreach (var item in sourcecolumns)
+        //                //{
+        //                //    if (!worksheetHeaders.Contains(item.sourcefield_name.Trim().ToLower()))
+        //                //    {
+        //                //        throw new Exception("File Header Name Mismatch!");
+        //                //    }
+        //                //}
+
+        //                DataTable dt = new DataTable();
+        //                int totalRows = worksheet.LastRowUsed().RowNumber();
+        //                int totalCols = bcpcolumns.Count;//worksheet.Dimension.End.Column;
+
+        //                string[,] colType = new string[totalCols, 3];
+        //                int i = 0;
+
+        //                foreach (var items in bcpcolumns)
+        //                {
+        //                    //changes done on 28-01-2025 start
+        //                    // Determine the .NET DataType based on sourcefield_datatype
+        //                    Type columnType = typeof(string); // Default to string if no match is found
+        //                    switch (items.sourcefield_datatype.ToUpper())
+        //                    {
+        //                        case "TEXT":
+        //                            columnType = typeof(string);
+        //                            break;
+        //                        case "DATE":
+        //                            columnType = typeof(string);
+        //                            break;
+        //                        case "DATETIME":
+        //                            columnType = typeof(string);
+        //                            break;
+        //                        case "NUMERIC" when items.source_type.ToUpper() == "EXPRESSION":
+        //                            columnType = typeof(string); // Override for Numeric + Expression
+        //                            break;
+        //                        case "NUMERIC":
+        //                            columnType = typeof(double);
+        //                            break;
+        //                        case "INTEGER" when items.source_type.ToUpper() == "EXPRESSION":
+        //                            columnType = typeof(string); // Override for INTEGER + Expression
+        //                            break;
+        //                        case "INTEGER":
+        //                            columnType = typeof(int);
+        //                            break;
+        //                        default:
+        //                            columnType = typeof(string); // Fallback to string
+        //                            break;
+        //                    }
+
+        //                    // Add column to DataTable with the determined type
+        //                    dt.Columns.Add(items.sourcefield_name, columnType);
+        //                    //changes done on 28-01-2025 end
+
+        //                    //dt.Columns.Add(items.sourcefield_name);// cmd on 28-01-2025
+        //                    var trgds_datatype = dbContext.con_col_datatype
+        //                        .Where(p => p.sourcefield_name == items.sourcefield_name
+        //                            && p.pipeline_code == pipelinecode
+        //                            && p.dataset_code == dataset_code)
+        //                        .Select(a => new
+        //                        {
+        //                            a.dataset_code,
+        //                            a.dataset_field_type,
+        //                            a.sourcefield_name,
+        //                            a.dataset_field_name,
+        //                            a.source_type
+        //                        }).FirstOrDefault();
+
+        //                    colType[i, 0] = items.sourcefield_name;
+        //                    colType[i, 1] = items.sourcefield_sno.ToString();
+
+        //                    if (trgds_datatype != null)
+        //                    {
+        //                        if (trgds_datatype.source_type.ToUpper() != "EXPRESSION")
+        //                            colType[i, 2] = trgds_datatype?.dataset_field_type ?? "TEXT";
+        //                        else
+        //                            colType[i, 2] = "EXPRESSION";
+        //                    }
+        //                    else
+        //                    {
+        //                        //colType[i, 2] = "EXPRESSION";
+        //                        colType[i, 2] = "TEXT";
+        //                    }
+
+        //                    i++;
+        //                }
+
+        //                int col = 0;
+        //                i = 0;
+
+        //                for (int row = 2; row <= totalRows; row++)
+        //                {
+        //                    DataRow newRow = dt.NewRow();
+        //                    object cellValue = null;
+
+        //                    for (i = 0; i < totalCols; i++)
+        //                    {
+        //                        col = Convert.ToInt16(colType[i, 1]);
+        //                        string columnName = colType[i, 0];
+        //                        string colDataType = colType[i, 2];
+
+        //                        if (colDataType != "EXPRESSION")
+        //                        {
+        //                            cellValue = worksheet.Cell(row, col).Value.ToString(); // Retrieve cell value
+
+        //                        }
+        //                        else
+        //                        {
+        //                            colDataType = "TEXT";
+        //                            cellValue = "";
+        //                        }
+
+        //                        if (colDataType == "TEXT")
+        //                        {
+        //                            newRow[i] = string.IsNullOrEmpty(cellValue?.ToString()) ? "" : cellValue.ToString();
+        //                        }
+        //                        else if (colDataType == "DATE")
+        //                        {
+        //                            string raw = cellValue.ToString();
+
+
+
+        //                            foreach (var pattern in midnightPatterns)
+        //                            {
+        //                                if (raw.Contains(pattern))
+        //                                {
+        //                                    raw = raw.Replace(pattern, "").Trim();
+        //                                }
+        //                            }
+        //                            newRow[i] = raw;
+
+
+
+        //                        }
+        //                        else if (colDataType == "DATETIME")
+        //                        {
+        //                            newRow[i] = cellValue.ToString();
+        //                            //if (double.TryParse(cellValue?.ToString(), out double excelSerialDate))
+        //                            //{
+        //                            //    //DateTime dateValue = DateTime.FromOADate(excelSerialDate);
+        //                            //    //newRow[i] = dateValue.ToString("yyyy-MM-dd HH:mm:ss");
+        //                            //    newRow[i] = cellValue.ToString();
+        //                            //}
+        //                            //else if (DateTime.TryParse(cellValue?.ToString(), out DateTime dateTimeValue))
+        //                            //{
+        //                            //    //newRow[i] = dateTimeValue.ToString("yyyy-MM-dd HH:mm:ss");
+        //                            //    newRow[i] = cellValue.ToString();
+        //                            //}
+        //                            //else
+        //                            //{
+        //                            //    newRow[i] = DBNull.Value; ; // Set to empty string if cellValue is null, empty, or invalid
+        //                            //}
+        //                        }
+        //                        else if (colDataType == "NUMERIC")
+        //                        {
+        //                            if (double.TryParse(cellValue?.ToString(), out double numericValue))
+        //                            {
+        //                                newRow[i] = numericValue.ToString();
+        //                            }
+        //                            else
+        //                            {
+        //                                newRow[i] = DBNull.Value; //"0";
+        //                            }
+        //                        }
+        //                        else if (colDataType == "INTEGER")
+        //                        {
+        //                            if (double.TryParse(cellValue?.ToString(), out double numericValue))
+        //                            {
+        //                                newRow[i] = numericValue.ToString();
+        //                            }
+        //                            else
+        //                            {
+        //                                newRow[i] = DBNull.Value;//"0";
+        //                            }
+        //                        }
+        //                    }
+        //                    dt.Rows.Add(newRow);
+        //                }
+
+        //                var filteredRows = dt.Select("1 = 1 " + query1);
+        //                DataTable filteredDt = filteredRows.Any() ? filteredRows.CopyToDataTable() : dt.Clone();
+
+        //                ds.Tables.Add(filteredDt);
+        //            }
+        //        }
+        //    }
+        //    else
+        //    {
+        //        // Handle unsupported file types
+        //    }
+
+        //    string directory = System.IO.Path.GetDirectoryName(rawFilePath); // Extract directory path
+
+        //    if (rawFilePath != "")
+        //    {
+        //        MovetheProcessedfile(rawFilePath, comp_file_path, sched_gid.ToString(), dataset_code);
+        //    }
+
+        //    return ds;
+        //}
+
+        [HttpPost]
+        public DataSet ExcelToDataSet(string pipelinecode, string rawFilePath, string datasetcode = "")
+        {
+            errormsg = "Step 1 ExcelToDataSet: ";
+            System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+            string fileExtension = "";
+            string query = "";
+            fileExtension = rawFilePath.Substring(rawFilePath.LastIndexOf('.'));
+            DataSet ds = new DataSet();
+            string dataset_code = "";
+            ppl_code = pipelinecode;
+            //try
+            //{
+                var query1 = "";
+                //Getting mapped columns srcfieldname,srctype,slno from the rawexcel
+                var bcpcolumns = (from a in dbContext.con_trn_tpplsourcefield
+                                  where a.pipeline_code == pipelinecode
+                                  where a.dataset_code == datasetcode
+                                  where a.sourcefieldmapping_flag == "Y"
+                                  //where (a.sourcefieldmapping_flag == "Y" || a.source_type == "Expression")
+                                  where a.delete_flag == "N"
+                                  orderby a.dataset_table_field_sno
+                                  select new
+                                  {
+                                      a.sourcefield_sno,
+                                      a.sourcefield_name,
+                                      a.sourcefield_datatype,
+                                      a.dataset_table_field,
+                                      a.source_type
+                                  }).ToList(); // Execute query immediately
+
+                //Getting Src Column from  con_trn_tpplsourcefield
+                var sourcecolumns = (from a in dbContext.con_trn_tpplsourcefield
+                                     where a.pipeline_code == pipelinecode
+                                     where a.dataset_code == datasetcode
+                                     where a.source_type != "Expression"
+                                     where a.delete_flag == "N"
+                                     orderby a.sourcefield_sno
+                                     select new
+                                     {
+                                         a.sourcefield_name,
+                                         a.sourcefield_sno
+                                     }).ToList();
+
+                // GetSheet name
+                string excel_sheetName = dbContext.con_mst_tpipeline
+                    .Where(p => p.pipeline_code == pipelinecode && p.pipeline_status == "Active" && p.delete_flag == "N")
+                    .Select(a => a.sheet_name)
+                    .FirstOrDefault();
+
+                dataset_code = datasetcode;
+
+                
+                // Inclusion condition Apply
+                var filtercond = dbContext.con_trn_tpplcondition
+                                 .Where(p => p.pipeline_code == pipelinecode
+                                             && p.dataset_code == datasetcode
+                                             && (p.condition_type == "Filter")
+                                             && p.delete_flag == "N")
+                                 .Select(a => new
+                                 {
+                                     condition_text = a.condition_text
+                                 }).ToList();
+
+                if (filtercond.Any() && !string.IsNullOrEmpty(filtercond[0].condition_text))
+                {
+                    query1 = " and (" + filtercond[0].condition_text + ")";
+                }
+
+                // Exclusion condition Apply
+                var rejectioncond = dbContext.con_trn_tpplcondition
+                                   .Where(p => p.pipeline_code == pipelinecode
+                                               && p.dataset_code == datasetcode
+                                               && (p.condition_type == "Rejection")
+                                               && p.delete_flag == "N")
+                                   .Select(a => new
+                                   {
+                                       condition_text = a.condition_text
+                                   }).ToList();
+
+                bool mdf_flag = false;
+
+                if (rejectioncond.Any() && !string.IsNullOrEmpty(rejectioncond[0].condition_text) && !mdf_flag)
+                {
+                    string modifiedCondition = rejectioncond[0].condition_text;
+                    if (rejectioncond[0].condition_text.Contains("="))
+                    {
+                        modifiedCondition = rejectioncond[0].condition_text.Replace("=", "<>");
+                    }
+                    else if (rejectioncond[0].condition_text.Contains(">"))
+                    {
+                        modifiedCondition = rejectioncond[0].condition_text.Replace(">", "<");
+                    }
+                    else if (rejectioncond[0].condition_text.Contains("<"))
+                    {
+                        modifiedCondition = rejectioncond[0].condition_text.Replace("<", ">");
+                    }
+
+                    if (!string.IsNullOrEmpty(modifiedCondition))
+                    {
+                        query1 += " and (" + modifiedCondition + ")";
+                        mdf_flag = true;
+                    }
+                }
+
+                string excelConnectionString = "";
+
+                if (fileExtension == ".xls" || fileExtension == ".xlsx")
+                {
+
+                    using (var workbook = new XLWorkbook(rawFilePath))
+                    {
+                        // var worksheet = workbook.Worksheets.FirstOrDefault();
+                        var worksheet = workbook.Worksheet(excel_sheetName);
+                        if (worksheet != null)
+                        {
+                            // column header validation
+                            foreach (var items in sourcecolumns)
+                            {
+                                if (worksheet.Cell(1, items.sourcefield_sno).GetValue<string>().ToLower().Trim() != items.sourcefield_name.ToLower().Trim())
+                                {
+                                    throw new Exception("File Header Name Missmatch !");
+                                }
+                            }
+
+                            DataTable dt = new DataTable();
+                            int totalRows = worksheet.LastRowUsed().RowNumber();
+                            int totalCols = bcpcolumns.Count;
+
+                            string[,] colType = new string[totalCols, 3];
+                            int i = 0;
+                            errormsg = "Step 5 ExcelToDataSet: 6170";
+                            System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                            //try
+                            //{
+                                foreach (var items in bcpcolumns)
+                                {
+                                    Type columnType = typeof(string); // Default to string if no match is found
+                                    var getmappedcol = (from a in dbContext.con_trn_tpplfieldmapping
+                                                        where a.pipeline_code == pipelinecode
+                                                        where a.dataset_code == datasetcode
+                                                        where a.ppl_field_name == items.sourcefield_name
+                                                        where a.delete_flag == "N"
+                                                        select new
+                                                        {
+                                                            a.ppl_field_name
+                                                        }).FirstOrDefault();
+
+                                    if (getmappedcol != null)
+                                    {
+                                        switch (items.sourcefield_datatype.ToUpper())
+                                        {
+                                            case "TEXT":
+                                                columnType = typeof(string);
+                                                break;
+                                            case "DATE":
+                                                columnType = typeof(string);
+                                                break;
+                                            case "DATETIME":
+                                                columnType = typeof(string);
+                                                break;
+                                            case "NUMERIC" when items.source_type.ToUpper() == "EXPRESSION":
+                                                columnType = typeof(string);
+                                                break;
+                                            case "NUMERIC":
+                                                columnType = typeof(double);
+                                                break;
+                                            case "INTEGER" when items.source_type.ToUpper() == "EXPRESSION":
+                                                columnType = typeof(string); // Override for INTEGER + Expression
+                                                break;
+                                            case "INTEGER":
+                                                columnType = typeof(int);
+                                                break;
+                                            default:
+                                                columnType = typeof(string); // Fallback to string
+                                                break;
+                                        }
+                                    }
+
+                                    // Add column to DataTable with the determined type
+                                    dt.Columns.Add(items.sourcefield_name, columnType);
+                                    var trgds_datatype = dbContext.con_col_datatype
+                                        .Where(p => p.sourcefield_name == items.sourcefield_name
+                                            && p.pipeline_code == pipelinecode
+                                            && p.dataset_code == dataset_code)
+                                        .Select(a => new
+                                        {
+                                            a.dataset_code,
+                                            a.dataset_field_type,
+                                            a.sourcefield_name,
+                                            a.dataset_field_name,
+                                            a.source_type
+                                        }).FirstOrDefault();
+
+                                    colType[i, 0] = items.sourcefield_name;
+                                    colType[i, 1] = items.sourcefield_sno.ToString();
+
+                                    if (trgds_datatype != null)
+                                    {
+                                        if (trgds_datatype.source_type.ToUpper() != "EXPRESSION")
+                                            colType[i, 2] = trgds_datatype?.dataset_field_type ?? "TEXT";
+                                        else
+                                            colType[i, 2] = "EXPRESSION";
+                                    }
+                                    else
+                                    {
+                                        colType[i, 2] = "TEXT";
+                                    }
+                                    i++;
+                                }
+
+                            //} catch(Exception ex)
+                            //{
+                            //    errormsg = "getmappedcol" + ex.Message;
+                            //    System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                            //    throw new Exception(ex.Message);
+                            //}
+                            int col = 0;
+                            i = 0;
+
+                            for (int row = 2; row <= totalRows; row++)
+                            {
+                                DataRow newRow = dt.NewRow();
+                                object cellValue = null;
+
+                                for (i = 0; i < totalCols; i++)
+                                {
+                                    col = Convert.ToInt16(colType[i, 1]);
+                                    string columnName = colType[i, 0];
+                                    string colDataType = colType[i, 2];
+
+                                    if (colDataType != "EXPRESSION")
+                                    {
+                                        cellValue = worksheet.Cell(row, col).Value.ToString(); // Retrieve cell value
+                                        /*(cellValue = worksheet.Cell(row, col).GetFormattedString();
+                                        var cell = worksheet.Cell(row, col);
+                                        // Get the format code applied in Excel
+                                        string formatCode = cell.Style.NumberFormat.Format;
+                                        // Get the cell's value using that format
+                                        string formattedValue = cell.GetFormattedString();
+                                        cellValue = formattedValue;*/
+                                    }
+                                    else
+                                    {
+                                        colDataType = "TEXT";
+                                        cellValue = "";
+                                    }
+
+                                    if (colDataType == "TEXT")
+                                    {
+                                        //try
+                                        //{
+                                            newRow[i] = string.IsNullOrEmpty(cellValue?.ToString()) ? "" : cellValue.ToString();
+                                        //}
+                                        //catch (Exception ex)
+                                        //{
+                                        //    errormsg = "TEXT" + ex.Message;
+                                        //    System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                                        //    throw new Exception(ex.Message);
+                                        //}
+                                    }
+                                    else if (colDataType == "DATE")
+                                    {
+                                        newRow[i] = cellValue.ToString();
+                                       
+                                    }
+                                    else if (colDataType == "DATETIME")
+                                    {
+                                        newRow[i] = cellValue.ToString();
+                                       
+                                    }
+                                    else if (colDataType == "NUMERIC")
+                                    {
+                                        //try
+                                        //{
+                                            if (double.TryParse(cellValue?.ToString(), out double numericValue))
+                                            {
+                                                newRow[i] = numericValue.ToString();
+                                            }
+                                            else
+                                            {
+                                                newRow[i] = DBNull.Value; //"0";
+                                            }
+                                        //}
+                                        //catch (Exception ex)
+                                        //{
+                                        //    errormsg = "NUMERIC" + ex.Message;
+                                        //    System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                                        //    throw new Exception(ex.Message);
+                                        //}
+
+                                    }
+                                    else if (colDataType == "INTEGER")
+                                    {
+
+                                        //try
+                                        //{
+                                            if (double.TryParse(cellValue?.ToString(), out double numericValue))
+                                            {
+                                                newRow[i] = numericValue.ToString();
+                                            }
+                                            else
+                                            {
+                                                newRow[i] = DBNull.Value;//"0";
+                                            }
+                                        //}
+                                        //catch (Exception ex)
+                                        //{
+                                        //    errormsg = "INTEGER" + ex.Message;
+                                        //    System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                                        //    throw new Exception(ex.Message);
+                                        //}
+                                    }
+                                }
+                                dt.Rows.Add(newRow);
+                            }
+                            errormsg = "Step 6 ExcelToDataSet: 6339 ";
+                            System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                            var filteredRows = dt.Select("1 = 1 " + query1);
+                            DataTable filteredDt = filteredRows.Any() ? filteredRows.CopyToDataTable() : dt.Clone();
+                            errormsg = "Step 7 ExcelToDataSet: 6343 ";
+                            System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                            ds.Tables.Add(filteredDt);
+                        }
+                    }
+                }
+                else
+                {
+                    // Handle unsupported file types
+                }
+
+                string directory = System.IO.Path.GetDirectoryName(rawFilePath); // Extract directory path
+
+                if (rawFilePath != "")
+                {
+                    MovetheProcessedfile(rawFilePath, comp_file_path, sched_gid.ToString(), dataset_code);
+                }
+            //}
+            //catch (Exception ex)
+            //{
+            //    errormsg = "Step 10 After Excelto Dataset: 7237" + ex.Message;
+            //    System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+            //    throw new Exception(ex.Message);
+            //}
+            errormsg = "Step 8 ExcelToDataSet: 6365 ";
+            System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+            return ds;
+        }
+
+        //public DataSet ExcelToDataSet_H(string pipelinecode, string rawFilePath, string datasetcode = "")
+        //{
+        //    string fileExtension = "";
+        //    string query = "";
+        //    //string[] parts = rawFilePath.Split('.');
+        //    //fileExtension = "." + parts.Last();
+        //    fileExtension = rawFilePath.Substring(rawFilePath.LastIndexOf('.'));
+        //    DataSet ds = new DataSet();
+        //    string dataset_code = "";
+        //    ppl_code = pipelinecode;
+        //    //try
+        //    //{
+        //    var query1 = "";
+
+        //    //Getting mapped columns srcfieldname,srctype,slno from the rawexcel
+        //    var bcpcolumns = (from a in dbContext.con_trn_tpplsourcefield
+        //                      where a.pipeline_code == pipelinecode
+        //                      where a.dataset_code == datasetcode
+        //                      where (a.sourcefieldmapping_flag == "Y" || a.source_type == "Expression")
+        //                      where a.delete_flag == "N"
+        //                      orderby a.dataset_table_field_sno
+        //                      select new
+        //                      {
+        //                          a.sourcefield_sno,
+        //                          a.sourcefield_name,
+        //                          a.sourcefield_datatype,
+        //                          a.dataset_table_field,
+        //                          a.source_type
+        //                      }).ToList(); // Execute query immediately
+
+        //    //Getting Src Column from  con_trn_tpplsourcefield
+        //    var sourcecolumns = (from a in dbContext.con_trn_tpplsourcefield
+        //                         where a.pipeline_code == pipelinecode
+        //                         where a.dataset_code == datasetcode
+        //                         where a.source_type != "Expression"
+        //                         where a.delete_flag == "N"
+        //                         orderby a.sourcefield_sno
+        //                         select new
+        //                         {
+        //                             a.sourcefield_name,
+        //                             a.sourcefield_sno
+        //                         }).ToList();
+
+        //    /*var ppl_dscode = dbContext.con_mst_tpipeline
+        //                       .Where(p => p.pipeline_code == pipelinecode
+        //                                    && p.pipeline_status == "Active" && p.delete_flag == "N")
+        //                       .Select(a => new
+        //                       {
+        //                           a.target_dataset_code
+        //                       }).FirstOrDefault();
+        //    dataset_code = ppl_dscode?.target_dataset_code;*/
+
+        //    dataset_code = datasetcode;
+
+        //    // Inclusion condition Apply
+        //    var filtercond = dbContext.con_trn_tpplcondition
+        //                     .Where(p => p.pipeline_code == pipelinecode
+        //                                 && p.dataset_code == datasetcode
+        //                                 && (p.condition_type == "Filter")
+        //                                 && p.delete_flag == "N")
+        //                     .Select(a => new
+        //                     {
+        //                         condition_text = a.condition_text
+        //                     }).ToList();
+
+        //    if (filtercond.Any() && !string.IsNullOrEmpty(filtercond[0].condition_text))
+        //    {
+        //        query1 = " and (" + filtercond[0].condition_text + ")";
+        //    }
+        //    // Hema
+
+        //    List<string> userFilters = new List<string>();
+        //    var filtersFromDb = dbContext.con_trn_tpplcondition
+        //        .Where(f => f.pipeline_code == pipelinecode
+        //                    && f.dataset_code == datasetcode
+        //                    && f.condition_type == "Filter" && f.delete_flag == "N")
+        //        .Select(f => f.condition_text)  // Select only the condition text (the filter condition string)
+        //        .ToList();
+        //    userFilters.AddRange(filtersFromDb); // Add the list of strings (filter conditions)
+
+        //    // Exclusion condition Apply
+        //    var rejectioncond = dbContext.con_trn_tpplcondition
+        //                       .Where(p => p.pipeline_code == pipelinecode
+        //                                   && p.dataset_code == datasetcode
+        //                                   && (p.condition_type == "Rejection")
+        //                                   && p.delete_flag == "N")
+        //                       .Select(a => new
+        //                       {
+        //                           condition_text = a.condition_text
+        //                       }).ToList();
+
+        //    bool mdf_flag = false;
+
+        //    if (rejectioncond.Any() && !string.IsNullOrEmpty(rejectioncond[0].condition_text) && !mdf_flag)
+        //    {
+        //        string modifiedCondition = rejectioncond[0].condition_text;
+        //        if (rejectioncond[0].condition_text.Contains("="))
+        //        {
+        //            modifiedCondition = rejectioncond[0].condition_text.Replace("=", "<>");
+        //        }
+        //        else if (rejectioncond[0].condition_text.Contains(">"))
+        //        {
+        //            modifiedCondition = rejectioncond[0].condition_text.Replace(">", "<");
+        //        }
+        //        else if (rejectioncond[0].condition_text.Contains("<"))
+        //        {
+        //            modifiedCondition = rejectioncond[0].condition_text.Replace("<", ">");
+        //        }
+
+        //        if (!string.IsNullOrEmpty(modifiedCondition))
+        //        {
+        //            query1 += " and (" + modifiedCondition + ")";
+        //            mdf_flag = true;
+        //        }
+        //    }
+
+        //    string excelConnectionString = "";
+
+        //    if (fileExtension == ".xls" || fileExtension == ".xlsx")
+        //    {
+
+        //        using (var workbook = new XLWorkbook(rawFilePath))
+        //        {
+        //            var worksheet = workbook.Worksheets.FirstOrDefault();
+        //            if (worksheet != null)
+        //            {
+        //                // column header validation
+        //                foreach (var items in sourcecolumns)
+        //                {
+        //                    if (worksheet.Cell(1, items.sourcefield_sno).GetValue<string>().ToLower().Trim() != items.sourcefield_name.ToLower().Trim())
+        //                    {
+        //                        throw new Exception("File Header Name Missmatch !");
+        //                    }
+        //                }
+
+        //                DataTable dt = new DataTable();
+        //                int totalRows = worksheet.LastRowUsed().RowNumber();
+        //                int totalCols = bcpcolumns.Count;//worksheet.Dimension.End.Column;
+
+        //                string[,] colType = new string[totalCols, 3];
+        //                int i = 0;
+
+        //                foreach (var items in bcpcolumns)
+        //                {
+        //                    dt.Columns.Add(items.sourcefield_name);
+        //                    var trgds_datatype = dbContext.con_col_datatype
+        //                        .Where(p => p.sourcefield_name == items.sourcefield_name
+        //                            && p.pipeline_code == pipelinecode
+        //                            && p.dataset_code == dataset_code)
+        //                        .Select(a => new
+        //                        {
+        //                            a.dataset_code,
+        //                            a.dataset_field_type,
+        //                            a.sourcefield_name,
+        //                            a.dataset_field_name,
+        //                            a.source_type
+        //                        }).FirstOrDefault();
+
+        //                    colType[i, 0] = items.sourcefield_name;
+        //                    colType[i, 1] = items.sourcefield_sno.ToString();
+
+        //                    if (trgds_datatype != null)
+        //                    {
+        //                        if (trgds_datatype.source_type.ToUpper() != "EXPRESSION")
+        //                            colType[i, 2] = trgds_datatype?.dataset_field_type ?? "TEXT";
+        //                        else
+        //                            colType[i, 2] = "EXPRESSION";
+        //                    }
+        //                    else
+        //                    {
+        //                        //colType[i, 2] = "EXPRESSION";
+        //                        colType[i, 2] = "TEXT";
+        //                    }
+
+        //                    i++;
+        //                }
+
+        //                int col = 0;
+        //                i = 0;
+
+        //                for (int row = 2; row <= totalRows; row++)
+        //                {
+        //                    DataRow newRow = dt.NewRow();
+        //                    object cellValue = null;
+
+        //                    for (i = 0; i < totalCols; i++)
+        //                    {
+        //                        col = Convert.ToInt16(colType[i, 1]);
+        //                        string columnName = colType[i, 0];
+        //                        string colDataType = colType[i, 2];
+
+        //                        if (colDataType != "EXPRESSION")
+        //                        {
+        //                            cellValue = worksheet.Cell(row, col).Value; // Retrieve cell value
+        //                        }
+        //                        else
+        //                        {
+        //                            colDataType = "TEXT";
+        //                            cellValue = "";
+        //                        }
+
+        //                        if (colDataType == "TEXT")
+        //                        {
+        //                            newRow[i] = string.IsNullOrEmpty(cellValue?.ToString()) ? "" : cellValue.ToString();
+        //                        }
+        //                        else if (colDataType == "DATE")
+        //                        {
+        //                            newRow[i] = cellValue.ToString();
+        //                            //if (double.TryParse(cellValue?.ToString(), out double excelSerialDate))
+        //                            //{
+        //                            //    DateTime dateValue = DateTime.FromOADate(excelSerialDate);
+        //                            //    newRow[i] = dateValue.ToString("yyyy-MM-dd");
+        //                            //}
+        //                            //else if (DateTime.TryParse(cellValue?.ToString(), out DateTime dateTimeValue))
+        //                            //{
+        //                            //    newRow[i] = dateTimeValue.ToString("yyyy-MM-dd");
+        //                            //}
+        //                            //else if (DateTime.TryParseExact(cellValue?.ToString(), "dd/MM/yyyy", null, System.Globalization.DateTimeStyles.None, out DateTime exactDateTimeValue))
+        //                            //{
+        //                            //    newRow[i] = exactDateTimeValue.ToString("yyyy-MM-dd");
+        //                            //}
+        //                            //else
+        //                            //{
+        //                            //    newRow[i] = ""; // Set to empty string if cellValue is null, empty, or invalid
+        //                            //}
+        //                        }
+        //                        else if (colDataType == "DATETIME")
+        //                        {
+        //                            newRow[i] = cellValue.ToString();
+        //                            //if (double.TryParse(cellValue?.ToString(), out double excelSerialDate))
+        //                            //{
+        //                            //    DateTime dateValue = DateTime.FromOADate(excelSerialDate);
+        //                            //    newRow[i] = dateValue.ToString("yyyy-MM-dd HH:mm:ss");
+        //                            //}
+        //                            //else if (DateTime.TryParse(cellValue?.ToString(), out DateTime dateTimeValue))
+        //                            //{
+        //                            //    newRow[i] = dateTimeValue.ToString("yyyy-MM-dd HH:mm:ss");
+        //                            //}
+        //                            //else
+        //                            //{
+        //                            //    newRow[i] = ""; // Set to empty string if cellValue is null, empty, or invalid
+        //                            //}
+        //                        }
+        //                        else if (colDataType == "NUMERIC")
+        //                        {
+        //                            if (double.TryParse(cellValue?.ToString(), out double numericValue))
+        //                            {
+        //                                newRow[i] = numericValue.ToString();
+        //                            }
+        //                            else
+        //                            {
+        //                                newRow[i] = "0";
+        //                            }
+        //                        }
+        //                        else if (colDataType == "INTEGER")
+        //                        {
+        //                            if (double.TryParse(cellValue?.ToString(), out double numericValue))
+        //                            {
+        //                                newRow[i] = numericValue.ToString();
+        //                            }
+        //                            else
+        //                            {
+        //                                newRow[i] = "0";
+        //                            }
+        //                        }
+        //                    }
+        //                    dt.Rows.Add(newRow);
+        //                }
+
+
+        //                //string safeCondition = query1 + " AND IsNumeric([Net Amount]) = 1 AND Convert([Net Amount], 'System.Decimal') > 0";
+        //                //var filteredRows = dt.Select("1 = 1 " + query1);
+        //                // Apply the dynamic user filters
+        //                // Hema start
+
+        //                var filteredRows = dt.AsEnumerable()
+        //                .Where(row =>
+        //                {
+        //                    foreach (var filter in userFilters)
+        //                    {
+        //                        string[] operators = new[] { "=", ">", "<", ">=", "<=", "LIKE" };
+        //                        string operatorSymbol = operators.FirstOrDefault(op => filter.Contains(op));
+
+        //                        if (string.IsNullOrEmpty(operatorSymbol))
+        //                        {
+        //                            return true; // Skip this filter if it's invalid
+        //                        }
+
+        //                        int operatorIndex = filter.IndexOf(operatorSymbol);
+        //                        string columnName = filter.Substring(0, operatorIndex).Trim(); // Extract column name
+        //                        columnName = columnName.Trim('[', ']');  // Remove square brackets if present
+        //                        columnName = columnName.ToLower();  // Normalize to lowercase for case-insensitive comparison
+
+        //                        string value = filter.Substring(operatorIndex + operatorSymbol.Length).Trim().Trim('\'');
+
+        //                        // Check if the column exists in the DataTable
+        //                        if (!dt.Columns.Contains(columnName))
+        //                        {
+        //                            throw new ArgumentException($"Column '{columnName}' does not exist in the DataTable.");
+        //                        }
+
+        //                        var cellValue = row[columnName];
+
+        //                        // Apply filter based on column type and condition
+        //                        if (dt.Columns[columnName].DataType == typeof(decimal) || dt.Columns[columnName].DataType == typeof(double) || dt.Columns[columnName].DataType == typeof(int))
+        //                        {
+        //                            if (double.TryParse(cellValue?.ToString(), out double numericValue))
+        //                            {
+        //                                if (operatorSymbol == ">")
+        //                                {
+        //                                    if (numericValue <= Convert.ToDouble(value)) return false;
+        //                                }
+        //                                else if (operatorSymbol == "<")
+        //                                {
+        //                                    if (numericValue >= Convert.ToDouble(value)) return false;
+        //                                }
+        //                                else if (operatorSymbol == "=")
+        //                                {
+        //                                    if (numericValue != Convert.ToDouble(value)) return false;
+        //                                }
+        //                            }
+        //                        }
+        //                        else if (dt.Columns[columnName].DataType == typeof(string))
+        //                        {
+        //                            string stringValue = cellValue?.ToString() ?? string.Empty;
+
+        //                            if (operatorSymbol == "=")
+        //                            {
+        //                                if (stringValue != value) return false;
+        //                            }
+        //                            else if (operatorSymbol == "LIKE")
+        //                            {
+        //                                if (!stringValue.Contains(value)) return false;
+        //                            }
+        //                            else if (operatorSymbol == ">")
+        //                            {
+        //                                if (!stringValue.Contains(value)) return false;
+        //                            }
+        //                        }
+        //                        else if (dt.Columns[columnName].DataType == typeof(DateTime))
+        //                        {
+        //                            if (DateTime.TryParse(cellValue?.ToString(), out DateTime dateValue))
+        //                            {
+        //                                DateTime filterDate = DateTime.Parse(value);
+        //                                if (operatorSymbol == "=")
+        //                                {
+        //                                    if (dateValue != filterDate) return false;
+        //                                }
+        //                                else if (operatorSymbol == ">")
+        //                                {
+        //                                    if (dateValue <= filterDate) return false;
+        //                                }
+        //                                else if (operatorSymbol == "<")
+        //                                {
+        //                                    if (dateValue >= filterDate) return false;
+        //                                }
+        //                            }
+        //                        }
+        //                    }
+
+        //                    // If none of the conditions failed, keep the row
+        //                    return true;
+        //                })
+        //                .ToList();
+
+
+        //                // Hema end
+
+        //                DataTable filteredDt = filteredRows.Any() ? filteredRows.CopyToDataTable() : dt.Clone();
+
+        //                ds.Tables.Add(filteredDt);
+        //            }
+        //        }
+        //    }
+        //    else
+        //    {
+        //        // Handle unsupported file types
+        //    }
+
+        //    string directory = System.IO.Path.GetDirectoryName(rawFilePath); // Extract directory path
+
+        //    if (directory == v_filepath.TrimEnd('\\'))
+        //    {
+        //        //MovetheProcessedfile(rawFilePath, comp_file_path, sched_gid.ToString());
+        //    }
+        //    //}
+        //    //catch (Exception ex)
+        //    //{
+        //    //    throw new Exception(ex.Message);
+        //    //}
+        //    return ds;
+        //}
+
+
+        [HttpPost]
+        public DataSet ExcelToDataSet_08072024(string pipelinecode, string rawFilePath)
+        {
+            string fileExtension = "";
+            string query = "";
+            string[] parts = rawFilePath.Split('.');
+            fileExtension = "." + parts.Last();
+            string result = "";
+            DataSet ds = new DataSet();
+            string dataset_code = "";
+            ppl_code = pipelinecode;
+            try
+            {
+                var query1 = "";
+
+                //Getting mapped columns srcfieldname,srctype,slno from the rawexcel
+                var bcpcolumns = from a in dbContext.con_trn_tpplsourcefield
+                                 where a.pipeline_code == pipelinecode
+                                 where (a.sourcefieldmapping_flag == "Y" || a.source_type == "Expression")
+                                 where a.delete_flag == "N"
+                                 orderby a.dataset_table_field_sno
+                                 select new
+                                 {
+                                     a.sourcefield_sno,
+                                     a.sourcefield_name,
+                                     a.sourcefield_datatype,
+                                     a.dataset_table_field,
+                                     a.source_type
+                                 };
+                var resultList = bcpcolumns.ToList();
+
+
+                var ppl_dscode = dbContext.con_mst_tpipeline
+                                   .Where(p => p.pipeline_code == pipelinecode && p.pipeline_status == "Active" && p.delete_flag == "N")
+                                   .Select(a => new
+                                   {
+                                       a.target_dataset_code
+                                   }).FirstOrDefault();
+                dataset_code = ppl_dscode.target_dataset_code;
+
+
+                // Inclusion condition Apply
+                var filtercond = dbContext.con_trn_tpplcondition
+                 .Where(p => p.pipeline_code == pipelinecode
+                         && (p.condition_type == "Filter")
+                         && p.delete_flag == "N")
+                 .Select(a => new
+                 {
+                     condition_text = a.condition_text
+                 })
+                 .ToList();
+
+                if (filtercond.Count > 0)
+                {
+                    if (!string.IsNullOrEmpty(filtercond[0].condition_text))
+                    {
+                        query1 = " and (" + filtercond[0].condition_text + ")";
+                    }
+                }
+
+                // Exclusion condition Apply
+                var rejectioncond = dbContext.con_trn_tpplcondition
+                 .Where(p => p.pipeline_code == pipelinecode
+                         && (p.condition_type == "Rejection")
+                         && p.delete_flag == "N")
+                 .Select(a => new
+                 {
+                     condition_text = a.condition_text
+                 })
+                 .ToList();
+
+                bool mdf_flag = false;
+
+                if (rejectioncond.Count > 0 && rejectioncond[0].condition_text != "" && mdf_flag == false)
+                {
+                    string modifiedCondition = "";
+
+                    if (rejectioncond[0].condition_text.Contains("="))
+                    {
+                        modifiedCondition = rejectioncond[0].condition_text.Replace("=", "<>");
+                    }
+                    else if (rejectioncond[0].condition_text.Contains(">"))
+                    {
+                        modifiedCondition = rejectioncond[0].condition_text.Replace(">", "<");
+                    }
+                    else if (rejectioncond[0].condition_text.Contains("<"))
+                    {
+                        modifiedCondition = rejectioncond[0].condition_text.Replace("<", ">");
+                    }
+
+                    if (!string.IsNullOrEmpty(modifiedCondition))
+                    {
+                        query1 += " and (" + modifiedCondition + ")";
+                        mdf_flag = true;
+                    }
+                }
+
+                string excelConnectionString = "";
+
+                if (fileExtension == ".xls" || fileExtension == ".xlsx")
+                {
+
+                    using (var workbook = new XLWorkbook(rawFilePath))
+                    {
+                        var worksheet = workbook.Worksheets.FirstOrDefault();
+                        if (worksheet != null)
+                        {
+                            DataTable dt = new DataTable();
+                            int totalRows = worksheet.LastRowUsed().RowNumber();
+                            int totalCols = worksheet.LastColumnUsed().ColumnNumber();
+
+                            string[,] colType = new string[2, totalCols];
+                            int i = 0;
+                            string colDataType;
+
+
+                            foreach (var items in bcpcolumns)
+                            {
+                                dt.Columns.Add(items.sourcefield_name);
+
+                                var trgds_datatype = dbContext.con_col_datatype
+                                    .Where(p => p.sourcefield_name == items.sourcefield_name && p.dataset_code == dataset_code)
+                                    .Select(a => new
+                                    {
+                                        a.dataset_code,
+                                        a.dataset_field_type,
+                                        a.sourcefield_name,
+                                        a.dataset_field_name
+                                    }).FirstOrDefault();
+
+                                colType[0, i] = items.sourcefield_name;
+                                colType[1, i++] = trgds_datatype?.dataset_field_type ?? "TEXT";
+                            }
+
+
+                            for (int row = 2; row <= totalRows; row++)
+                            {
+                                DataRow newRow = dt.NewRow();
+                                for (int col = 1; col <= totalCols; col++)
+                                {
+                                    object cellValue = worksheet.Cell(row, col).Value;// Retrieve cell value
+                                    string columnName = dt.Columns[col - 1].ColumnName;
+
+                                    colDataType = colType[1, col - 1];
+
+                                    if (colDataType == "TEXT")
+                                    {
+                                        newRow[col - 1] = string.IsNullOrEmpty(cellValue?.ToString()) ? "" : cellValue.ToString();
+                                    }
+                                    else if (colDataType == "DATE")
+                                    {
+                                        if (double.TryParse(cellValue?.ToString(), out double excelSerialDate))
+                                        {
+                                            DateTime dateValue = DateTime.FromOADate(excelSerialDate);
+                                            newRow[col - 1] = dateValue.ToString("yyyy-MM-dd");
+                                        }
+                                        else if (DateTime.TryParse(cellValue?.ToString(), out DateTime dateTimeValue))
+                                        {
+                                            newRow[col - 1] = dateTimeValue.ToString("yyyy-MM-dd");
+                                        }
+                                        else if (DateTime.TryParseExact(cellValue?.ToString(), "dd/MM/yyyy", null, System.Globalization.DateTimeStyles.None, out DateTime exactDateTimeValue))
+                                        {
+                                            newRow[col - 1] = exactDateTimeValue.ToString("yyyy-MM-dd");
+                                        }
+                                        else
+                                        {
+                                            newRow[col - 1] = ""; // Set to empty string if cellValue is null, empty, or invalid
+                                        }
+
+                                    }
+                                    else if (colDataType == "DATETIME")
+                                    {
+                                        if (double.TryParse(cellValue?.ToString(), out double excelSerialDate))
+                                        {
+                                            DateTime dateValue = DateTime.FromOADate(excelSerialDate);
+                                            newRow[col - 1] = dateValue.ToString("yyyy-MM-dd HH:mm:ss");
+                                        }
+                                        else if (DateTime.TryParse(cellValue?.ToString(), out DateTime dateTimeValue))
+                                        {
+                                            newRow[col - 1] = dateTimeValue.ToString("yyyy-MM-dd HH:mm:ss");
+                                        }
+                                        else
+                                        {
+                                            newRow[col - 1] = ""; // Set to empty string if cellValue is null, empty, or invalid
+                                        }
+
+                                    }
+                                    else if (colDataType == "NUMERIC")
+                                    {
+                                        if (double.TryParse(cellValue?.ToString(), out double numericValue))
+                                        {
+                                            newRow[col - 1] = numericValue.ToString();
+                                        }
+                                        else
+                                        {
+                                            newRow[col - 1] = "0";
+                                        }
+                                    }
+                                    else if (colDataType == "INTEGER")
+                                    {
+                                        if (double.TryParse(cellValue?.ToString(), out double numericValue))
+                                        {
+                                            newRow[col - 1] = numericValue.ToString();
+                                        }
+                                        else
+                                        {
+                                            newRow[col - 1] = "0";
+                                        }
+                                    }
+
+                                }
+                                dt.Rows.Add(newRow);
+                            }
+
+                            var z = dt.Rows.Count;
+                            //string safeCondition = query1 + " AND IsNumeric([Net Amount]) = 1 AND Convert([Net Amount], 'System.Decimal') > 0";
+                            //var filteredRows = dt.Select("1 = 1 " + safeCondition);
+                            var filteredRows = dt.AsEnumerable()
+                                .Where(row =>
+                                {
+                                    // Check if the [Net Amount] is a valid number (try parsing it)
+                                    decimal netAmount;
+                                    bool isValidNumber = decimal.TryParse(row["Net Amount"].ToString(), out netAmount);
+
+                                    // Ensure that the [Net Amount] is a valid number and matches the condition
+                                    return isValidNumber && netAmount > 0;
+                                })
+                                .ToList();
+                            DataTable filteredDt = filteredRows.Any() ? filteredRows.CopyToDataTable() : dt.Clone();
+
+                            ds.Tables.Add(filteredDt);
+
+                        }
+                    }
+                }
+                else
+                {
+                    // Handle unsupported file types
+                }
+
+                string directory = System.IO.Path.GetDirectoryName(rawFilePath); // Extract directory path
+
+                if (directory == v_filepath.TrimEnd('\\'))
+                {
+                    //MovetheProcessedfile(rawFilePath, comp_file_path, sched_gid.ToString());
+                }
+            }
+            catch (Exception ex)
+            {
+                //Trace Error
+                var errorLog = new ErrorLog
+                {
+                    in_errorlog_pipeline_code = ppl_code,
+                    in_errorlog_scheduler_gid = sched_gid,
+                    in_errorlog_type = "Catch - Method Name : ExcelToDataSet",
+                    in_errorlog_exception = ex.Message,
+                    in_created_by = initiated_by
+                };
+                Errorlog(errorLog);
+                UpdateScheduler(sched_gid, "Failed", "System");
+                string errormsg = "Error: " + ex.Message;
+            }
+            return ds;
+        }
+
+        [HttpPost]
+        public DataSet ExcelToDataSet_OLEDB(string pipelinecode, string rawFilePath, string datasetcode = "")
+        {
+            string fileExtension = "";
+            string query = "";
+            string[] parts = rawFilePath.Split('.');
+            fileExtension = "." + parts.Last();
+            string result = "";
+            DataSet ds = new DataSet();
+            try
+            {
+                var query1 = "";
+                //errormsg = "Step 8 : " + rawFilePath;
+                //System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                //Inclusion condition Apply
+                var filtercond = dbContext.con_trn_tpplcondition
+                 .Where(p => p.pipeline_code == pipelinecode
+                            && p.pipeline_code == pipelinecode
+                            && (p.condition_type == "Filter")
+                            && p.delete_flag == "N")
+                 .Select(a => new
+                 {
+                     condition_text = a.condition_text
+                 })
+                 .ToList();
+
+                if (filtercond.Count > 0)
+                {
+
+                    if (filtercond[0].condition_text != "")
+                    {
+                        query1 = "and (" + filtercond[0].condition_text + ")";
+                    }
+                }
+                //Exclusion condition Apply
+                var rejectioncond = dbContext.con_trn_tpplcondition
+                 .Where(p => p.pipeline_code == pipelinecode
+                            && p.dataset_code == datasetcode
+                            && (p.condition_type == "Rejection")
+                            && p.delete_flag == "N")
+                 .Select(a => new
+                 {
+                     condition_text = a.condition_text
+                 })
+                 .ToList();
+
+                bool mdf_flag = false;
+
+                if (rejectioncond.Count > 0 && rejectioncond[0].condition_text != "" && mdf_flag == false)
+                {
+                    string modifiedCondition = "";
+
+                    if (rejectioncond[0].condition_text.Contains("="))
+                    {
+                        modifiedCondition = rejectioncond[0].condition_text.Replace("=", "<>");
+                    }
+                    else if (rejectioncond[0].condition_text.Contains(">"))
+                    {
+                        modifiedCondition = rejectioncond[0].condition_text.Replace(">", "<");
+                    }
+                    else if (rejectioncond[0].condition_text.Contains("<"))
+                    {
+                        modifiedCondition = rejectioncond[0].condition_text.Replace("<", ">");
+                    }
+
+                    if (!string.IsNullOrEmpty(modifiedCondition))
+                    {
+                        query1 = query1 + " AND (" + modifiedCondition + ")";
+                        mdf_flag = true;
+                    }
+                }
+
+                string excelConnectionString = "";
+
+                if (fileExtension == ".xls")
+                {
+                    excelConnectionString = "Provider=Microsoft.Jet.OLEDB.4.0;Data Source=" + rawFilePath + ";Extended Properties=\"Excel 8.0;HDR=Yes;IMEX=1\"";
+                }
+                else if (fileExtension == ".xlsx")
+                {
+                    excelConnectionString = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" + rawFilePath + ";Extended Properties=\"Excel 12.0;HDR=Yes;IMEX=1\"";
+                }
+                OleDbConnection excelConnection = new OleDbConnection(excelConnectionString);//connection for excel.
+
+                excelConnection.Open();//excel connection open.
+                DataTable dtexcel = new DataTable();//datatable object.
+                dtexcel = excelConnection.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, null);
+                if (dtexcel == null)
+                {
+                    return null;
+                }
+                excelConnection.Dispose();
+
+                String[] excelSheets = new String[dtexcel.Rows.Count];
+                int t = 0;
+                //excel data saves in temp file here.
+                foreach (DataRow row in dtexcel.Rows)
+                {
+                    excelSheets[t] = row["TABLE_NAME"].ToString();
+                    t++;
+                }
+                OleDbConnection excelConnection1 = new OleDbConnection(excelConnectionString);//connection for excel.
+                int excel = excelSheets.Count();
+                //query = string.Format("Select * from [{0}]",dtexcel.Rows[0]["TABLE_NAME"].ToString() );
+                query = string.Format("Select * from [{0}]", "Sheet1$");
+                query = query + " Where 1 = true " + query1;
+
+                OleDbCommand thecmd = new OleDbCommand(query, excelConnection1);
+                thecmd.CommandTimeout = 0;
+
+                OleDbDataAdapter thedataadapter = new OleDbDataAdapter(thecmd);
+
+                thedataadapter.Fill(ds);
+
+                excelConnection1.Close();
+
+                string directory = System.IO.Path.GetDirectoryName(rawFilePath); // Extract directory path
+
+                if (directory == v_filepath.TrimEnd('\\'))
+                {
+                    //MovetheProcessedfile(rawFilePath, "D:\\Mohan\\CompletedFiles", sched_gid.ToString());
+                }
+                return ds;
+            }
+            catch (Exception ex)
+            {
+                UpdateScheduler(sched_gid, "Failed", "System");
+                return ds;
+            }
+        }
+
+        public void MovetheProcessedfile(string sourceFilePath, string destinationFolderPath, string scheduler_id, string dataset_code)
+        {
+            try
+            {
+
+                // Check if the source file exists
+                if (System.IO.File.Exists(sourceFilePath))
+                {
+                    // Check if the destination folder exists, if not create it
+                    if (!Directory.Exists(destinationFolderPath))
+                    {
+                        Directory.CreateDirectory(destinationFolderPath);
+                    }
+
+                    // Get the filename from the source file path
+                    string fileExtenstion = System.IO.Path.GetExtension(sourceFilePath);
+                    string fileName = scheduler_id + fileExtenstion;
+
+                    // Construct the destination file path
+                    string destinationFilePath = System.IO.Path.Combine(destinationFolderPath, fileName);
+
+                    // Move the file to the destination folder
+                    System.IO.File.Move(sourceFilePath, destinationFilePath);
+
+                    Console.WriteLine("File moved successfully.");
+                }
+                else
+                {
+                    Console.WriteLine("Source file does not exist.");
+                    //Trace Error
+                    var errorLog = new ErrorLog
+                    {
+                        in_errorlog_pipeline_code = ppl_code,
+                        in_errorlog_scheduler_gid = sched_gid,
+                        in_errorlog_type = "Catch - Method Name : MovetheProcessedfile",
+                        in_errorlog_exception = "Source file does not exist.",
+                        in_created_by = initiated_by
+                    };
+                    Errorlog(errorLog).Wait();
+                    UpdateScheduler(sched_gid, "Failed", "System").Wait();
+                    Reschedulefornexttime(ppl_code, dataset_code).Wait();
+                }
+            }
+            catch (Exception ex)
+            {
+                //Trace Error
+                var errorLog = new ErrorLog
+                {
+                    in_errorlog_pipeline_code = ppl_code,
+                    in_errorlog_scheduler_gid = sched_gid,
+                    in_errorlog_type = "Catch - Method Name : MovetheProcessedfile",
+                    in_errorlog_exception = ex.Message,
+                    in_created_by = initiated_by
+                };
+                Errorlog(errorLog).Wait();
+                UpdateScheduler(sched_gid, "Failed", "System").Wait();
+                Reschedulefornexttime(ppl_code, dataset_code).Wait();
+            }
+        }
+
+        public string DatatableToCSV(DataTable dt, string pipelinecode, string datasetcode = "")
+        {
+
+            string destinationTableName = "con_trn_tbcp";
+
+            // Create a MySqlConnection using the connection string
+            using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+            {
+                var pplcode = pipelinecode;
+                csvfilePath = csvfilePath + sched_gid + ".csv";
+                // Create the directory if it doesn't exist
+                string directory = System.IO.Path.GetDirectoryName(csvfilePath);
+                // Create the folder if it doesn't exist.
+                if (!Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+                errormsg = "Step 7 DatatableToCSV: 7237";
+                System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                // Check if the file exists, if not, create the file
+                if (!System.IO.File.Exists(csvfilePath))
+                {
+                    using (FileStream fs = System.IO.File.Create(csvfilePath))
+                    {
+
+                    }
+                    // Create a StreamWriter to write the CSV file
+                    using (StreamWriter writer = new StreamWriter(csvfilePath))
+                    {
+                        // Write the column headers
+                        foreach (DataColumn column in dt.Columns)
+                        {
+                            writer.Write(column.ColumnName);
+                            if (column.Ordinal < dt.Columns.Count - 1)
+                            {
+                                writer.Write("`~*`");
+                            }
+                        }
+                        writer.WriteLine();
+
+                        // Write the data rows
+                        foreach (DataRow row in dt.Rows)
+                        {
+                            for (int i = 0; i < dt.Columns.Count; i++)
+                            {
+                                writer.Write(row[i].ToString().Trim().Replace("\n", "").Replace("\r", " "));
+                                if (i < dt.Columns.Count - 1)
+                                {
+                                    writer.Write("`~*`");
+                                }
+                            }
+                            writer.WriteLine();
+                        }
+                        errormsg = "Step 8 DatatableToCSV: 7273";
+                        System.IO.File.AppendAllText(errorlogfilePath, errormsg + Environment.NewLine);
+                        writer.Close();
+                    }
+                }
+
+
+                if (connect.State != ConnectionState.Open)
+                    connect.Open();
+
+                var shdgid = dbContext.con_trn_tscheduler
+                      .Where(p => p.pipeline_code == pipelinecode
+                                  && p.dataset_code == datasetcode
+                                  //&& p.scheduler_status == "Scheduled")
+                                  && p.scheduler_status == "Scheduled" || p.scheduler_status == "Locked")
+                      .Select(a => new
+                      {
+                          scheduler_gid = a.scheduler_gid
+                      })
+                      .ToList();
+                connect.Close();
+
+                //try
+                //{
+
+                if (shdgid.Count > 0)
+                {
+                    sched_gid = shdgid[0].scheduler_gid;
+                    UpdateScheduler(sched_gid, "Initiated", "System");
+
+                    connect.Open();
+
+                    var bulkLoader = new MySqlBulkLoader(connect)
+                    {
+                        Expressions =  {
+                                    "scheduler_gid =" + sched_gid,
+                               },
+                        TableName = destinationTableName, // Replace with your target table name
+                        FieldTerminator = "`~*`",         // CSV field delimiter
+                        LineTerminator = lineterm,         // CSV line terminator
+                        FileName = csvfilePath,
+                        NumberOfLinesToSkip = 1,      // Skip the header row if necessary
+                        CharacterSet = "utf8",   // Set the character set
+                        Local = true,
+                        Timeout = 0
+                    };
+
+                    List<string> bcpcolumn = new List<string>();
+
+                    for (int i = 1; dt.Columns.Count >= i; i++)
+                    {
+                        bcpcolumn.Add("col" + i);
+
+                    }
+                    //bcpcolumn.Add("dataset_import_gid");
+
+                    bulkLoader.Columns.AddRange(bcpcolumn);
+
+                    int rowsAffected = bulkLoader.Load();
+
+                    // Delete the csv file after processing
+                    if (System.IO.File.Exists(csvfilePath))
+                    {
+                        System.IO.File.Delete(csvfilePath);
+                        Console.WriteLine("File deleted after processing.");
+                    }
+
+                    MySqlCommand command = connect.CreateCommand();
+
+                    command.CommandType = CommandType.StoredProcedure;
+                    command.CommandText = "pr_con_set_dataprocessing";
+                    command.CommandTimeout = 0;
+                    command.Parameters.AddWithValue("pipelinecode", pipelinecode);
+                    command.Parameters.AddWithValue("schedulerid", sched_gid);
+                    command.Parameters.AddWithValue("in_datasetcode", datasetcode);
+
+                    //MySqlParameter out_msg = new MySqlParameter("@out_msg", MySqlDbType.VarChar, 255)
+                    //{
+                    //    Direction = ParameterDirection.Output
+                    //};
+                    //MySqlParameter out_result = new MySqlParameter("@out_result", MySqlDbType.Int32)
+                    //{
+                    //    Direction = ParameterDirection.Output
+                    //};
+
+                    //command.Parameters.Add(out_msg);
+                    //command.Parameters.Add(out_result);
+
+                    command.ExecuteNonQuery();
+
+                    //string outMsgValue = command.Parameters["@out_msg"].Value.ToString();
+
+                    connect.Close();
+
+                    //UpdateScheduler(sched_gid, "Completed", "System");
+
+                    return (sched_gid.ToString());
+
+                }
+                else
+                {
+                    return ("This Pipeline is not scheduled..!");
+                }
+                //}
+
+                //catch (Exception ex)
+                //{
+                //    //Trace Error
+                //    var errorLog = new ErrorLog
+                //    {
+                //        in_errorlog_pipeline_code = ppl_code,
+                //        in_errorlog_scheduler_gid = sched_gid,
+                //        in_errorlog_type = "Catch - Method Name : DatatableToCSV",
+                //        in_errorlog_exception = ex.Message,
+                //        in_created_by = initiated_by
+                //    };
+                //    Errorlog(errorLog);
+
+                //    UpdateScheduler(sched_gid, "Failed", "System");
+
+                //    return ex.Message.ToString();
+
+                //}
+
+            }
+            ;
+        }
+
+        #endregion
+
+        #region First Scheduler
+        //First Scheduler
+        [HttpGet]
+        public IActionResult GetpplScheduledFinList()
+        {
+
+            var getsch = dbContext.con_trn_tpplfinalization
+                    .Where(a => a.run_type == "Scheduled Run"
+                            && a.delete_flag == "N")
+                    .Select(a => new
+                    {
+                        finalization_gid = a.finalization_gid,
+                        pipeline_code = a.pipeline_code,
+                        dataset_code = a.dataset_code,
+                        run_type = a.run_type,
+                        cron_expression = a.cron_expression,
+                        extract_mode = a.extract_mode,
+                        upload_mode = a.upload_mode,
+                        key_field = a.key_field,
+                        extract_condition = a.extract_condition,
+                        pull_days = a.pull_days,
+                        reject_duplicate_flag = a.reject_duplicate_flag,
+                        error_mode = a.error_mode
+                    })
+                    .ToList();
+
+            return Ok(getsch);
+
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> CreateScheduler([FromBody] NewSchedulerForothers objsched)
+        {
+            string msg = "Success";
+            try
+            {
+                var count = await dbContext.con_mst_tpipeline
+                        .Where(a => a.pipeline_code == objsched.pipeline_code && a.delete_flag == "N" && a.pipeline_status == "Active")
+                        .CountAsync();
+
+                var getsch = dbContext.con_trn_tscheduler
+                        .Where(p => p.pipeline_code == objsched.pipeline_code && p.dataset_code == objsched.dataset_code && p.delete_flag == "N"
+                        && p.scheduler_status != "Failed" && p.scheduler_status != "Completed" && p.scheduler_status != "Ratified" && p.scheduler_status != "Cancelled")
+                        .Select(p => new Scheduler
+                        {
+                            scheduler_status = p.scheduler_status,
+                        })
+                        .SingleOrDefault();
+
+                if (count > 0)
+                {
+
+                    if (getsch == null)
+                    {
+                        var sch = new Scheduler()
+                        {
+                            scheduler_gid = 0,
+                            scheduled_date = GetServerDateTime(),//DateTime.Now,
+                            pipeline_code = objsched.pipeline_code,
+                            dataset_code = objsched.dataset_code,
+                            file_name = src_filename,
+                            scheduler_start_date = GetServerDateTime(),//DateTime.Now,
+                            scheduler_status = "Scheduled",
+                            scheduler_initiated_by = objsched.initiated_by,
+                            delete_flag = "N"
+                        };
+
+                        await dbContext.con_trn_tscheduler.AddAsync(sch);
+                        await dbContext.SaveChangesAsync();
+
+                    }
+                    else
+                    {
+                        msg = "This Pipeline is already in <" + getsch.scheduler_status + "> status";
+                    }
+                }
+                else
+                {
+                    msg = "This is not a Active pipeline";
+
+                }
+            }
+            catch (Exception ex)
+            {
+                msg = ex.Message;
+            }
+
+            return Ok(msg);
+        }
+        #endregion
+
+        #region Second Scheduler
+
+        //Second Scheduler
+        [HttpGet]
+        public IActionResult GetSchedulerList()
+        {
+            try
+            {
+                // Get the current date and time
+                DateTime currentDateTime = GetServerDateTime();//DateTime.Now;
+
+                // Query records within the less than current date ahead
+                var getsch = dbContext.con_trn_tscheduler
+                    .Where(p => p.scheduler_status == "Scheduled"
+                            && p.pipeline_code != ""
+                            && p.dataset_code != ""
+                            && p.scheduler_start_date <= currentDateTime
+                            //&& p.file_path == null 
+                            //&& p.file_name == null
+                            && p.delete_flag == "N")
+                    .Select(c => new
+                    {
+                        scheduler_gid = c.scheduler_gid,
+                        scheduled_date = c.scheduled_date,
+                        pipeline_code = c.pipeline_code,
+                        dataset_code = c.dataset_code,
+                        //file_path = c.file_path.IsNullOrEmpty() ? "" : c.file_path,
+                        //file_name = c.file_name.IsNullOrEmpty() ? "" : c.file_name,
+                        scheduler_start_date = c.scheduler_start_date,
+                        scheduler_end_date = c.scheduler_end_date,
+                        scheduler_status = c.scheduler_status,
+                        scheduler_initiated_by = c.scheduler_initiated_by,
+                        delete_flag = c.delete_flag
+                    }).OrderBy(a => a.scheduler_gid)
+                    .FirstOrDefault();
+                //.ToList();
+                return Ok(getsch);
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        //TGDS_Taskscheduler
+        #endregion
+
+        #region Scheduler table insert for Excel
+        public DateTime GetServerDateTime()
+        {
+            using (MySqlConnection connection = new MySqlConnection(targetconnectionString))
+            {
+                connection.Open(); // Synchronous method to open the connection
+
+                MySqlCommand command = connection.CreateCommand();
+                command.CommandText = "SELECT NOW();"; // Query to get current server datetime
+
+                object result = command.ExecuteScalar(); // Synchronous method to execute the query
+
+                if (result != null && DateTime.TryParse(result.ToString(), out DateTime serverDateTime))
+                {
+                    return serverDateTime;
+                }
+                else
+                {
+                    throw new InvalidOperationException("Unable to fetch server datetime.");
+                }
+            }
+        }
+
+        [HttpPost]
+        //public async Task<IActionResult> NewScheduler(string pipeline_code, IFormFile file, string initiated_by)
+        public async Task<JsonResult> NewScheduler(NewScheduler objsched)
+        {
+
+            string msg = "";
+            int out_result = 0;
+            src_filename = objsched.file.FileName;
+            string fileExtension = src_filename.Substring(src_filename.LastIndexOf('.'));
+
+            initiated_by = objsched.initiated_by;
+            ppl_code = objsched.pipeline_code;
+            try
+            {
+                var count = await dbContext.con_mst_tpipeline
+                        .Where(a => a.pipeline_code == objsched.pipeline_code && a.delete_flag == "N" && a.pipeline_status == "Active")
+                        .CountAsync();
+
+                //Duplicate File Name Validation
+                var DuplicateFilename = await dbContext.con_trn_tscheduler
+                        .Where(a => a.pipeline_code == objsched.pipeline_code
+                        && (a.scheduler_status == "Completed" || a.scheduler_status == "Ratified")
+                        && a.file_name == src_filename
+                        && a.delete_flag == "N")
+                        .CountAsync();
+
+                if (DuplicateFilename > 0)
+                {
+                    msg = "Duplicate File Name";
+                    return new JsonResult(new { message = msg, result = out_result });
+                }
+                var getsch = dbContext.con_trn_tscheduler
+                        .Where(p => p.pipeline_code == objsched.pipeline_code && p.dataset_code == objsched.dataset_code && p.delete_flag == "N"
+                        && p.scheduler_status != "Failed" && p.scheduler_status != "Completed" && p.scheduler_status != "Ratified" && p.scheduler_status != "Cancelled")
+                        .Select(p => new Scheduler
+                        {
+                            scheduler_status = p.scheduler_status,
+                        })
+                        .SingleOrDefault();
+                if (count > 0)
+                {
+                    if (getsch == null)
+                    {
+                        var sch = new Scheduler()
+                        {
+                            scheduler_gid = 0,//Guid.NewGuid(),
+                            scheduled_date = GetServerDateTime(),//DateTime.Now,
+                            pipeline_code = objsched.pipeline_code,
+                            dataset_code = objsched.dataset_code,
+                            //file_path = src_filepath,
+                            file_name = src_filename,
+                            scheduler_start_date = GetServerDateTime(),//DateTime.Now,
+                            scheduler_status = "Scheduled",
+                            scheduler_initiated_by = objsched.initiated_by,
+                            delete_flag = "N"
+                        };
+                        await dbContext.con_trn_tscheduler.AddAsync(sch);
+                        await dbContext.SaveChangesAsync();
+                        var lastInsertedId = sch.scheduler_gid;
+                        src_filename = lastInsertedId + fileExtension;
+                        var src_filepath = uploadfilepath + src_filename;
+
+                        var shdlr = await dbContext.con_trn_tscheduler.FindAsync(lastInsertedId);
+                        shdlr.file_path = src_filepath;
+                        shdlr.last_update_date = GetServerDateTime();//DateTime.Now;
+
+                        await dbContext.SaveChangesAsync();
+
+                        RawfileUploaded(objsched.file);
+
+                        //New Code Start 04/10/2024
+                        var pipelineWithConnector = await dbContext.con_mst_tpipeline
+                       .Where(p => p.pipeline_code == objsched.pipeline_code && p.delete_flag == "N")
+                       .Join(
+                           dbContext.con_mst_tconnection,
+                                       pipeline => pipeline.connection_code,
+                           connector => connector.connection_code,
+                           (pipeline, connector) => new { Pipeline = pipeline, Connector = connector }
+                       )
+                       .FirstOrDefaultAsync();
+
+                        if (pipelineWithConnector.Connector.source_db_type == "Excel")
+                        {
+                            msg = await Exceldatapush(lastInsertedId, objsched.dataset_code);
+                        }
+                        else if (pipelineWithConnector.Connector.source_db_type == "CSV")
+                        {
+                            msg = await CSVdatapush(lastInsertedId);
+                        }
+
+                        out_result = 1;
+                    }
+                    else
+                    {
+                        msg = "This Pipeline is already in (" + getsch.scheduler_status + ") status";
+                    }
+                }
+                else
+                {
+                    msg = "This is not a Active pipeline";
+
+                }
+            }
+            catch (Exception ex)
+            {
+                var errorLog = new ErrorLog
+                {
+                    in_errorlog_pipeline_code = ppl_code,
+                    in_errorlog_scheduler_gid = sched_gid,
+                    in_errorlog_type = "Catch - Method Name : NewScheduler",
+                    in_errorlog_exception = ex.Message,
+                    in_created_by = initiated_by
+                };
+                Errorlog(errorLog);
+                UpdateScheduler(sched_gid, "Failed", "System");
+                out_result = 0;
+                msg = ex.Message;
+            }
+
+            return new JsonResult(new { message = msg, result = out_result });
+        }
+
+        public string RawfileUploaded(IFormFile file)
+        {
+            string msg = "";
+            //try
+            //{
+            if (file != null && file.Length > 0)
+            {
+                if (!Directory.Exists(uploadfilepath))
+                {
+                    Directory.CreateDirectory(uploadfilepath);
+                }
+
+                //var src_filename = file.FileName;
+                var targetFilePath = System.IO.Path.Combine(uploadfilepath, src_filename);
+                using (var stream = new FileStream(targetFilePath, FileMode.Create))
+                {
+                    file.CopyTo(stream);
+                }
+
+                msg = "File uploaded and saved successfully...";
+            }
+            else
+            {
+                //Trace Error
+                var errorLog = new ErrorLog
+                {
+                    in_errorlog_pipeline_code = ppl_code,
+                    in_errorlog_scheduler_gid = sched_gid,
+                    in_errorlog_type = "Catch - Method Name : RawfileUploaded",
+                    in_errorlog_exception = "No file was uploaded.",
+                    in_created_by = initiated_by
+                };
+                Errorlog(errorLog);
+                UpdateScheduler(sched_gid, "Failed", "System");
+                msg = "No file was uploaded.";
+            }
+            //}
+            //catch (Exception ex)
+            //{
+            //    //Trace Error
+            //    var errorLog = new ErrorLog
+            //    {
+            //        in_errorlog_pipeline_code = ppl_code,
+            //        in_errorlog_scheduler_gid = sched_gid,
+            //        in_errorlog_type = "Catch - Method Name : RawfileUploaded",
+            //        in_errorlog_exception = ex.Message,
+            //        in_created_by = initiated_by
+            //    };
+            //    Errorlog(errorLog);
+            //    UpdateScheduler(sched_gid, "Failed", "System");
+            //    msg = "An error occurred: " + ex.Message;
+            //}
+
+            return msg;
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> UpdateScheduler(int scheduler_gid, string scheduler_status, string initiated_by)
+        {
+            try
+            {
+                var shdlr = await dbContext.con_trn_tscheduler.FindAsync(scheduler_gid);
+
+                if (shdlr != null)
+                {
+                    shdlr.scheduler_status = scheduler_status;
+                    shdlr.last_update_date = GetServerDateTime();//DateTime.Now;
+                    shdlr.scheduler_initiated_by = initiated_by;
+
+                    await dbContext.SaveChangesAsync();
+
+                    return Ok("Record Updated Successfully");
+                }
+                else
+                {
+                    return NotFound("Record Not Found for Update");
+                }
+            }
+            catch (DbUpdateConcurrencyException ex)
+            {
+                // Handle concurrency conflicts
+                // You may want to reload the entity and apply changes again or inform the user about the conflict.
+                return Conflict($"Concurrency Conflict: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                // Handle other exceptions
+                return StatusCode(500, $"An error occurred while updating the record: {ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #region Scheduler table insert for Other Source
+
+        [HttpPost]
+        public async Task<IActionResult> TGDS_Taskscheduler([FromBody] NewSchedulerForothers objsched)
+        {
+
+            string msg = "";
+            try
+            {
+                var count = await dbContext.con_mst_tpipeline
+                        .Where(a => a.pipeline_code == objsched.pipeline_code && a.delete_flag == "N" && a.pipeline_status == "Active")
+                        .CountAsync();
+
+
+                var getsch = dbContext.con_trn_tscheduler
+                        .Where(p => p.scheduler_gid == objsched.scheduler_gid
+                        && p.pipeline_code == objsched.pipeline_code
+                        && p.dataset_code == objsched.dataset_code
+                        && p.scheduler_status == "Locked" && p.delete_flag == "N")
+                        .Select(p => new Scheduler
+                        {
+                            scheduler_status = p.scheduler_status,
+                            file_path = p.file_path,
+                            file_name = p.file_name
+                        })
+                        .SingleOrDefault();
+
+                if (count > 0)
+                {
+                    if (getsch != null)
+                    {
+                        var pipelineWithConnector = await dbContext.con_mst_tpipeline
+                       .Where(p => p.pipeline_code == objsched.pipeline_code && p.delete_flag == "N")
+                       .Join(
+                           dbContext.con_mst_tconnection,
+                                       pipeline => pipeline.connection_code,
+                           connector => connector.connection_code,
+                           (pipeline, connector) => new { Pipeline = pipeline, Connector = connector }
+                       )
+                       .FirstOrDefaultAsync();
+
+                        if (pipelineWithConnector.Connector.source_db_type == "Excel")
+                        {
+                            msg = await Exceldatapush(objsched.scheduler_gid, objsched.dataset_code);
+                        }
+                        else
+                        {
+                            msg = OtherSrcdatapush(objsched.scheduler_gid);
+                        }
+                    }
+                    else
+                    {
+                        msg = "This Pipeline is already in <" + getsch.scheduler_status + "> status";
+                    }
+                }
+                else
+                {
+                    msg = "This is not a Active pipeline";
+
+                }
+            }
+            catch (Exception ex)
+            {
+                UpdateScheduler(objsched.scheduler_gid, "Failed", "System");
+                msg = ex.Message;
+            }
+
+            return Ok(msg);
+        }
+
+        [HttpPost]
+        //public async Task<IActionResult> NewSchedulerForOthers(NewSchedulerForothers objsched)
+        public async Task<IActionResult> NewSchedulerForOthers(string pipeline_code, string initiated_by, string dataset_code)
+        {
+            NewScheduler objsched = new NewScheduler();
+            objsched.pipeline_code = pipeline_code;
+            objsched.dataset_code = dataset_code;
+            objsched.initiated_by = initiated_by;
+
+            string msg = "";
+            try
+            {
+                var count = await dbContext.con_mst_tpipeline
+                        .Where(a => a.pipeline_code == objsched.pipeline_code && a.delete_flag == "N" && a.pipeline_status == "Active")
+                        .CountAsync();
+
+                var getsch = dbContext.con_trn_tscheduler
+                        .Where(p => p.pipeline_code == objsched.pipeline_code && p.dataset_code == objsched.dataset_code && p.delete_flag == "N"
+                        && p.scheduler_status != "Failed" && p.scheduler_status != "Completed" && p.scheduler_status != "Ratified" && p.scheduler_status != "Cancelled")
+                        .Select(p => new Scheduler
+                        {
+                            scheduler_status = p.scheduler_status,
+                        })
+                        .SingleOrDefault();
+
+                if (count > 0)
+                {
+
+                    if (getsch == null)
+                    {
+                        var sch = new Scheduler()
+                        {
+                            scheduler_gid = 0,//Guid.NewGuid(),
+                            scheduled_date = GetServerDateTime(),//DateTime.Now,
+                            pipeline_code = objsched.pipeline_code,
+                            dataset_code = objsched.dataset_code,
+                            scheduler_start_date = GetServerDateTime(),//DateTime.Now,
+                            scheduler_status = "Scheduled",
+                            scheduler_initiated_by = objsched.initiated_by,
+                            delete_flag = "N"
+                        };
+
+                        await dbContext.con_trn_tscheduler.AddAsync(sch);
+                        await dbContext.SaveChangesAsync();
+                        var lastInsertedId = sch.scheduler_gid;
+
+                        await dbContext.SaveChangesAsync();
+
+                        msg = OtherSrcdatapush(lastInsertedId);
+
+                    }
+                    else
+                    {
+                        msg = "This Pipeline is already in <" + getsch.scheduler_status + "> status";
+                    }
+                }
+                else
+                {
+                    msg = "This is not a Active pipeline";
+
+                }
+            }
+            catch (Exception ex)
+            {
+                UpdateScheduler(sched_gid, "Failed", "System");
+                msg = ex.Message;
+            }
+
+            return Ok(msg);
+        }
+
+        public string OtherSrcdatapush(int scheduler_gid)
+        {
+            string msg = "";
+            DataSet dataSet = null;
+            sched_gid = scheduler_gid;
+
+            try
+            {
+                //Get Pipeline codeagainst scheduler id
+                var schldpplcode = dbContext.con_trn_tscheduler
+                          .Where(a => a.scheduler_gid == scheduler_gid
+                          //&& a.scheduler_status == "Scheduled"
+                          && a.scheduler_status == "Scheduled" || a.scheduler_status == "Locked"
+                          && a.delete_flag == "N")
+                          .Select(a => new
+                          {
+                              scheduler_gid = a.scheduler_gid,
+                              pipeline_code = a.pipeline_code,
+                              dataset_code = a.dataset_code,
+                              Rawfilepath = a.file_path
+                          }).OrderByDescending(a => a.scheduler_gid)
+                          .FirstOrDefault();
+
+                if (schldpplcode != null)
+                {
+
+                    // Call the FieldmappingDT method
+                    DataTable dataTable = FieldmappingDT(schldpplcode.pipeline_code, schldpplcode.dataset_code).Result;
+                    if (dataTable.Rows.Count <= 0)
+                    {
+                        UpdateScheduler(scheduler_gid, "Failed", "System");
+                        return "Fieldmapping is not done for this pipeline...";
+                    }
+                    //Get dataset 
+                    dataSet = OtherSrcToDataSet(schldpplcode.pipeline_code);
+
+                    int dtrow_count = dataTable.Rows.Count;
+                    //int matched_count = 0;
+
+                    //Only for Excel Connector CMD BY Mohan 29-06-2024
+                    //for (int m = 0; dataSet.Tables[0].Columns.Count > m; m++)
+                    //{
+                    //    // DataRow row = dataTable.Rows[m];
+                    //    var val = dataTable.Rows[m]["ppl_field_name"].ToString();//row[m].ToString();
+                    //    var val1 = dataSet.Tables[0].Columns[m].ToString();
+                    //    if (val != val1)
+                    //    {
+                    //        UpdateScheduler(scheduler_gid, "Failed", "System");
+                    //        return "File Header Name Missmatch";
+                    //    }
+
+                    //}
+                    //CMD START
+                    //Expression column name added part cmd by mohan on 06-07-2024
+                    //var expressionNames = dbContext.con_trn_tpplsourcefield
+                    // .Where(p => p.pipeline_code == schldpplcode.pipeline_code
+                    //         && (p.source_type == "Expression")
+                    //         && p.delete_flag == "N")
+                    // .Select(a => new
+                    // {
+                    //     sourcefield_name = a.sourcefield_name,
+                    //     sourcefield_expression = a.sourcefield_expression
+                    // })
+                    // .ToList();
+
+                    //for (int i = 0; i < expressionNames.Count; i++)
+                    //{
+                    //    dataSet.Tables[0].Columns.Add(expressionNames[i].sourcefield_name);
+                    //}
+                    //CMD END
+                    string pplcode = schldpplcode.pipeline_code;
+                    string datasetcode = schldpplcode.dataset_code;
+                    msg = DatatableToCSV(dataSet.Tables[0], pplcode, datasetcode);
+                }
+                else
+                {
+
+                    msg = "This Pipeline is not scheduled..!";
+                }
+            }
+            catch (Exception ex)
+            {
+                UpdateScheduler(scheduler_gid, "Failed", "System");
+                return "Error: " + ex.Message;
+            }
+
+            return msg;
+        }
+
+        [HttpPost]
+        public DataSet OtherSrcToDataSet(string pipelinecode, string datasetcode = "")
+        {
+            string fileExtension = "";
+            string query = "select ";
+
+            string result = "";
+
+            DataSet ds = new DataSet();
+            try
+            {
+                var query1 = "";
+                // After 15-11-2024 changes
+                string FormatFieldName(string fieldName)
+                {
+                    return $"`{fieldName}`";
+                }
+
+                // Fetch the raw data from the database first
+                var bcpcolumns = (from a in dbContext.con_trn_tpplsourcefield
+                                  where a.pipeline_code == pipelinecode
+                                  where a.dataset_code == datasetcode
+                                  where a.sourcefieldmapping_flag == "Y"
+                                  where a.delete_flag == "N"
+                                  orderby a.dataset_table_field_sno
+                                  select new
+                                  {
+                                      a.source_type,
+                                      a.sourcefield_name
+                                  }).ToList();
+
+                // Now apply the transformation on the retrieved data
+                var resultList = bcpcolumns.Select(a =>
+                    a.source_type != "Expression"
+                        ? FormatFieldName(a.sourcefield_name)
+                        : "''"
+                ).ToList();
+
+                var concatenatedResult = string.Join(",", resultList);
+
+                query = query + concatenatedResult + " from ";
+
+                var ppl = dbContext.con_mst_tpipeline
+              .Where(p => p.pipeline_code == pipelinecode && p.pipeline_status == "Active" && p.delete_flag == "N")
+              .Select(p => new Pipeline
+              {
+                  connection_code = p.connection_code,
+                  table_view_query_desc = p.table_view_query_desc,
+                  db_name = p.db_name
+              })
+              .SingleOrDefault();
+
+                // Inclusion condition apply
+                var filtercond = dbContext.con_trn_tpplcondition
+                 .Where(p => p.pipeline_code == pipelinecode
+                             && p.dataset_code == datasetcode
+                         && (p.condition_type == "Filter")
+                         && p.delete_flag == "N")
+                 .Select(a => new
+                 {
+                     condition_text = a.condition_text
+                 })
+                 .ToList();
+                // Hema
+                List<string> userFilters = new List<string>(); // List to store filter conditions
+                var filtersFromDb = dbContext.con_trn_tpplcondition
+                    .Where(f => f.pipeline_code == pipelinecode && f.dataset_code == datasetcode && f.condition_type == "Filter" && f.delete_flag == "N")
+                    .Select(f => f.condition_text)  // Make sure this is retrieving the filter condition text
+                    .ToList();
+                userFilters.AddRange(filtersFromDb);
+
+                if (filtercond.Count > 0)
+                {
+
+                    if (filtercond[0].condition_text.Trim() != "")
+                    {
+                        var flcond = filtercond[0].condition_text.Replace("[", "`").Replace("]", "`");
+                        query1 = " and (" + flcond + ")";
+                    }
+                }
+
+                //Exclusion condition Apply
+                var rejectioncond = dbContext.con_trn_tpplcondition
+                 .Where(p => p.pipeline_code == pipelinecode
+                             && p.dataset_code == datasetcode
+                             && (p.condition_type == "Rejection")
+                             && p.delete_flag == "N")
+                 .Select(a => new
+                 {
+                     condition_text = a.condition_text
+                 })
+                 .ToList();
+
+
+                if (rejectioncond.Count > 0)
+                {
+                    if (rejectioncond[0].condition_text.Trim() != "")
+                    {
+                        var rjcond = rejectioncond[0].condition_text.Replace("[", "`").Replace("]", "`");
+                        query1 = query1 + " and (" + rjcond + ")";
+                    }
+                }
+
+                //Extract condition Apply
+                var extcond = dbContext.con_trn_tpplfinalization
+                 .Where(p => p.pipeline_code == pipelinecode
+                            && p.dataset_code == datasetcode
+                            && ((p.extract_condition != "") || (p.extract_condition != null))
+                            && p.delete_flag == "N")
+                 .Select(a => new
+                 {
+                     extract_condition = a.extract_condition,
+                     last_incremental_val = a.last_incremental_val,
+                     extract_mode = a.extract_mode,
+                     pull_days = a.pull_days
+                 })
+                 .ToList();
+
+                var incrementalcond = dbContext.con_trn_tincrementalrecord
+                 .Where(p => p.pipeline_code == pipelinecode && p.dataset_code == datasetcode
+                 && p.incremental_field.Contains(".val")
+                 && p.delete_flag == "N")
+                 .Select(a => new
+                 {
+                     incremental_field = a.incremental_field,
+                     incremental_value = a.incremental_value ?? "1900-01-01" // Default date if null
+                 })
+                 .ToList();
+
+
+                if (extcond.Count > 0)
+                {
+
+                    string originalString = extcond[0].extract_condition.Trim();
+
+                    if (originalString != "" && extcond[0].extract_mode == "Incremental records")
+                    {
+                        // Iterate over incrementalcond
+                        foreach (var item in incrementalcond)
+                        {
+                            // Check if the incremental_field exists in the original string
+                            if (originalString.Contains(item.incremental_field))
+                            {
+                                // Replace the incremental_field with the incremental_value
+                                originalString = originalString.Replace(item.incremental_field, "'" + item.incremental_value.ToString() + "'");
+                            }
+                        }
+                        if (incrementalcond.Count > 0)
+                        {
+                            //originalString = originalString.Replace("[", "`").Replace("]", "`");
+                            originalString = ReplaceBrackets(originalString);
+                            query1 = query1 + " and (" + originalString + ")";
+                        }
+
+                    }
+                    else if (originalString != "" && extcond[0].extract_mode == "Pull last X days")
+                    {
+                        originalString = originalString + " > DATE_SUB(CURDATE(), INTERVAL " + extcond[0].pull_days + " DAY)";
+                        //originalString = originalString.Replace("[", "`").Replace("]", "`");
+                        originalString = ReplaceBrackets(originalString);
+                        query1 = query1 + " and (" + originalString + ")";
+                    }
+                }
+
+                //if (extcond[0].extract_condition.Trim() != "")
+                //{
+                //    var excond = extcond[0].extract_condition.Replace("[", "`").Replace("]", "`");
+                //    excond = excond.Replace("*datefield",
+                //             string.IsNullOrEmpty(extcond[0].last_incremental_val) ? "'2000-01-01'" : "'" + extcond[0].last_incremental_val.ToString() + "'").Replace("*integerfield", string.IsNullOrEmpty(extcond[0].last_incremental_val) ? "'0'" : extcond[0].last_incremental_val);
+                //    query1 = query1 + " and (" + excond + ")";
+                //}
+
+
+                var connector = dbContext.con_mst_tconnection
+              .Where(p => p.connection_code == ppl.connection_code && p.delete_flag == "N")
+              .Select(p => new ConnectionModel
+              {
+                  source_host_name = p.source_host_name,
+                  source_port = p.source_port,
+                  source_db_user = p.source_db_user,
+                  source_db_pwd = p.source_db_pwd,
+              })
+              .SingleOrDefault();
+
+                // Construct the connection string
+                //var src_connstring = $"server={connector.source_host_name}; uid={connector.source_db_user}; pwd={connector.source_db_pwd}; database={ppl.db_name};";
+
+                //DataTable dataTable = new DataTable();
+
+                //string excludeColumns = Getconfigvalue("exclude_column");//"dataset_gid,scheduler_gid,delete_flag";
+                //string columnQuery = $@"
+                //SELECT GROUP_CONCAT(COLUMN_NAME)
+                //FROM INFORMATION_SCHEMA.COLUMNS
+                //WHERE TABLE_SCHEMA = '{ppl.db_name}' AND TABLE_NAME = '{ppl.table_view_query_desc}'
+                //AND COLUMN_NAME NOT IN ({string.Join(",", excludeColumns.Split(',').Select(c => $"'{c}'"))})";
+
+                //string columns = "";
+                //using (MySqlConnection connection = new MySqlConnection(src_connstring))
+                //{
+                //    connection.Open();
+
+                //    using (MySqlCommand command = new MySqlCommand(columnQuery, connection))
+                //    {
+                //        columns = (string)command.ExecuteScalar();
+                //    }
+                //}
+
+                //if (!string.IsNullOrEmpty(columns))
+                //{
+                //    query = $"SELECT {columns} FROM {ppl.table_view_query_desc} WHERE 1=1 {query1}";
+
+                //    using (MySqlConnection connection = new MySqlConnection(src_connstring))
+                //    {
+                //        connection.Open();
+
+                //        using (MySqlCommand command = new MySqlCommand(query, connection))
+                //        {
+                //            using (MySqlDataAdapter adapter = new MySqlDataAdapter(command))
+                //            {
+                //                adapter.Fill(dataTable);
+                //            }
+                //        }
+                //    }
+                //    ds.Tables.Add(dataTable);
+                //}
+
+                //return ds;
+
+                var src_connstring = "server=" + connector.source_host_name + "; uid=" +
+                                  connector.source_db_user + "; pwd=" + connector.source_db_pwd + "; database=" + ppl.db_name + ";";
+
+                DataTable dataTable = new DataTable();
+
+                query = query + ppl.table_view_query_desc + " where 1=1 " + query1;
+
+                using (MySqlConnection connection = new MySqlConnection(src_connstring))
+                {
+                    connection.Open();
+
+                    using (MySqlCommand command = new MySqlCommand(query, connection))
+                    {
+                        using (MySqlDataAdapter adapter = new MySqlDataAdapter(command))
+                        {
+                            adapter.Fill(dataTable);
+                        }
+                    }
+                }
+                ds.Tables.Add(dataTable); //
+                return ds;
+            }
+            catch (Exception ex)
+            {
+                UpdateScheduler(sched_gid, "Failed", "System");
+                return ds;
+            }
+        }
+
+        public string ReplaceBrackets(string input)
+        {
+            // Replace the first "[" and "]" with "`"
+            int firstOpenBracket = input.IndexOf("[");
+            int firstCloseBracket = input.IndexOf("]");
+
+            if (firstOpenBracket != -1 && firstCloseBracket > firstOpenBracket)
+            {
+                input = input.Remove(firstOpenBracket, 1).Insert(firstOpenBracket, "`");
+                input = input.Remove(firstCloseBracket, 1).Insert(firstCloseBracket, "`");
+            }
+
+            // Adjust indices for the second pair of brackets (since the first pair was modified)
+            int secondOpenBracket = input.IndexOf("[", firstOpenBracket + 1);
+            int secondCloseBracket = input.IndexOf("]", firstCloseBracket + 1);
+
+            if (secondOpenBracket != -1 && secondCloseBracket > secondOpenBracket)
+            {
+                // Remove the second set of brackets
+                input = input.Remove(secondOpenBracket, 1);
+
+                // Adjust the secondCloseBracket index after removing the open bracket
+                secondCloseBracket = input.IndexOf("]", secondOpenBracket);
+
+                // Remove the closing bracket after adjusting the index
+                input = input.Remove(secondCloseBracket, 1);
+            }
+
+            return input;
+        }
+
+        #endregion
+
+        #region Pipeline clone
+        [HttpPost]
+        public async Task<IActionResult> Pipeline_Cloning([FromBody] pipelineclone objpplclone)
+        {
+            List<PipelinecloneResult> results = new List<PipelinecloneResult>();
+            using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+            {
+                if (connect.State != ConnectionState.Open)
+                    connect.Open();
+
+                MySqlCommand command = connect.CreateCommand();
+
+                command.CommandType = CommandType.StoredProcedure;
+                command.CommandText = "pr_con_ins_pipelineclone";
+
+                command.Parameters.AddWithValue("in_pipeline_name", objpplclone.in_pipeline_name);
+                command.Parameters.AddWithValue("in_pipeline_code", objpplclone.in_pipeline_code);
+                command.Parameters.AddWithValue("in_dataset_code", objpplclone.in_dataset_code);
+                MySqlParameter out_srcfile_name = new MySqlParameter("@out_srcfile_name", MySqlDbType.VarChar, 64)
+                {
+                    Direction = ParameterDirection.Output
+                };
+                MySqlParameter out_dstfile_name = new MySqlParameter("@out_dstfile_name", MySqlDbType.VarChar, 64)
+                {
+                    Direction = ParameterDirection.Output
+                };
+                MySqlParameter out_msg = new MySqlParameter("@out_msg", MySqlDbType.VarChar, 255)
+                {
+                    Direction = ParameterDirection.Output
+                };
+                MySqlParameter out_result = new MySqlParameter("@out_result", MySqlDbType.Int32)
+                {
+                    Direction = ParameterDirection.Output
+                };
+                command.Parameters.Add(out_srcfile_name);
+                command.Parameters.Add(out_dstfile_name);
+                command.Parameters.Add(out_msg);
+                command.Parameters.Add(out_result);
+                command.ExecuteNonQuery();
+
+                PipelinecloneResult result = new PipelinecloneResult
+                {
+                    SrcFileName = out_srcfile_name.Value.ToString(),
+                    DstFileName = out_dstfile_name.Value.ToString(),
+                    Message = out_msg.Value.ToString(),
+                    Result = Convert.ToInt32(out_result.Value)
+                };
+                connect.Close();
+                if (Convert.ToInt32(out_result.Value) == 1)
+                {
+                    CopyAndRenameFile(out_srcfile_name.Value.ToString(), out_dstfile_name.Value.ToString());
+                }
+                results.Add(result);
+                return Ok(out_msg.Value.ToString());
+            }
+            ;
+
+        }
+
+        [HttpPost]
+        public void CopyAndRenameFile(string sourceFileName, string destinationFileName)
+        {
+            try
+            {
+                //string[] lastIndex = sourceFileName.Split(".");
+                //string fileExtension = lastIndex[1];
+
+                string fileExtension = sourceFileName.Substring(sourceFileName.LastIndexOf('.'));
+                destinationFileName = clonefilepath + destinationFileName + fileExtension;
+                sourceFileName = clonefilepath + sourceFileName;
+
+                // Check if the source file exists
+                if (System.IO.File.Exists(sourceFileName))
+                {
+                    // Copy the file to the destination and overwrite if it already exists
+                    System.IO.File.Copy(sourceFileName, destinationFileName, true);
+                }
+                else
+                {
+                    Console.WriteLine("Source file does not exist.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"An error occurred: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task Errorlog1([FromBody] ErrorLog objerrorlog)
+        {
+            using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+            {
+                if (connect.State != ConnectionState.Open)
+                    connect.Open();
+
+                MySqlCommand command = connect.CreateCommand();
+
+                command.CommandType = CommandType.StoredProcedure;
+                command.CommandText = "pr_con_ins_errorlog";
+
+                command.Parameters.AddWithValue("in_errorlog_pipeline_code", objerrorlog.in_errorlog_pipeline_code);
+                command.Parameters.AddWithValue("in_errorlog_scheduler_gid", objerrorlog.in_errorlog_scheduler_gid);
+                command.Parameters.AddWithValue("in_errorlog_type", objerrorlog.in_errorlog_type);
+                command.Parameters.AddWithValue("in_errorlog_exception", objerrorlog.in_errorlog_exception);
+                command.Parameters.AddWithValue("in_created_by", objerrorlog.in_created_by);
+
+                command.ExecuteNonQuery();
+
+            }
+            ;
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Errorlog([FromBody] ErrorLog objerrorlog)
+        {
+            try
+            {
+                using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+                {
+                    await connect.OpenAsync();
+
+                    using (MySqlCommand command = connect.CreateCommand())
+                    {
+                        command.CommandType = CommandType.StoredProcedure;
+                        command.CommandText = "pr_con_ins_errorlog";
+
+                        command.Parameters.AddWithValue("in_errorlog_pipeline_code", objerrorlog.in_errorlog_pipeline_code);
+                        command.Parameters.AddWithValue("in_errorlog_scheduler_gid", objerrorlog.in_errorlog_scheduler_gid);
+                        command.Parameters.AddWithValue("in_errorlog_type", objerrorlog.in_errorlog_type);
+                        command.Parameters.AddWithValue("in_errorlog_exception", objerrorlog.in_errorlog_exception);
+                        command.Parameters.AddWithValue("in_created_by", objerrorlog.in_created_by);
+
+                        await command.ExecuteNonQueryAsync();
+                    }
+                }
+
+                return Ok("Error log inserted successfully.");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"An error occurred while logging the error: {ex.Message}");
+            }
+        }
+        #endregion
+
+        #region getvalagainstPipeline
+
+        [HttpPost]
+
+        [HttpGet]
+        public async Task<IActionResult> GetIncrementalRecord(string pipelinecode, string datasetcode = "")
+        {
+            try
+            {
+                var records = await dbContext.con_trn_tincrementalrecord
+                .Where(item => item.delete_flag == "N" && item.pipeline_code == pipelinecode
+                                && item.dataset_code == datasetcode
+                                && item.incremental_field.EndsWith(".val"))
+                .OrderByDescending(item => item.incremental_gid)
+                .ToListAsync();
+
+                var recordsWithSerialNumber = records.Select((item, index) => new
+                {
+                    serialNumber = index + 1, // Adding 1 to make the serial number start from 1 instead of 0
+                    item.incremental_gid,
+                    item.pipeline_code,
+                    item.dataset_code,
+                    item.incremental_field,
+                    item.incremental_value,
+                    item.delete_flag
+                    // Add other fields as necessary
+                }).ToList();
+
+                return Ok(recordsWithSerialNumber);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+
+        [HttpPost]
+        public async Task<IActionResult> setIncrementalRecord([FromBody] setIncrementalRecord1 objsetIncrementalRecord)
+        {
+            using var transaction = await dbContext.Database.BeginTransactionAsync();
+            try
+            {
+                List<IncrementalRecordModel> records;
+                try
+                {
+                    records = JsonConvert.DeserializeObject<List<IncrementalRecordModel>>(objsetIncrementalRecord.jsondata);
+                }
+                catch (Exception ex)
+                {
+                    return BadRequest($"Error parsing JSON data: {ex.Message}");
+                }
+
+                var deleteincrementRecord = await dbContext.con_trn_tincrementalrecord
+                .Where(p => p.pipeline_code == objsetIncrementalRecord.pipeline_code
+                            && p.dataset_code == objsetIncrementalRecord.dataset_code
+                            && p.delete_flag == "N" && p.incremental_field.EndsWith(".val"))
+                .ToListAsync();
+
+                if (deleteincrementRecord.Any())
+                {
+                    dbContext.con_trn_tincrementalrecord.RemoveRange(deleteincrementRecord);
+                    await dbContext.SaveChangesAsync();
+                }
+                foreach (var data in records)
+                {
+                    var objIncrRecords = new PipelineIncrementalRecord()
+                    {
+                        incremental_gid = 0,
+                        pipeline_code = data.pipeline_code,
+                        dataset_code = data.dataset_code,
+                        incremental_field = data.incremental_field,
+                        incremental_value = data.incremental_value,
+                        delete_flag = "N"
+                    };
+
+                    await dbContext.con_trn_tincrementalrecord.AddAsync(objIncrRecords);
+                }
+
+                await dbContext.SaveChangesAsync();
+                await transaction.CommitAsync();
+                return Ok("Inserted Successfully");
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public string Getconfigvalue(string config_name)
+        {
+            string config_value = "";
+            var config = dbContext.con_mst_tconfig
+                                     .Where(p => p.config_name == config_name && p.delete_flag == "N")
+                                     .Select(a => new
+                                     {
+                                         a.config_value
+                                     }).FirstOrDefault();
+
+            try
+            {
+
+                if (config == null)
+                {
+                    config_value = "";
+                    return config_value;
+                }
+                else
+                {
+                    config_value = config.config_value;
+                }
+                return config_value;
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+        }
+        #endregion
+
+        #region
+        [HttpGet]
+        public async Task<IActionResult> GetQCDMasterwithParentCode(string parent_master_syscode, string depend_master_syscode)
+        {
+            try
+            {
+                var query = dbContext.con_mst_tqcdmaster
+                .Where(p => p.parent_master_syscode == parent_master_syscode && p.delete_flag == "N")
+                .Select(c => new ConnectionDto
+                {
+                    Id = c.master_syscode,
+                    Name = c.master_name
+                })
+                .ToList();
+
+                return Ok(query);
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"[Error: {ex.Message}]");
+            }
+        }
+
+
+        [HttpPost]
+        public async Task<IActionResult> CreateTrigger(string Dataset_code)
+        {
+            DataSet ds = new DataSet();
+            using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+            {
+                if (connect.State != ConnectionState.Open)
+                    connect.Open();
+
+                try
+                {
+                    using (MySqlCommand command = new MySqlCommand("pr_createtriggers_for_dataset_change_log", connect))
+                    {
+                        command.CommandType = CommandType.StoredProcedure;
+                        command.Parameters.AddWithValue("tablename", Dataset_code);
+
+                        using (MySqlDataAdapter adapter = new MySqlDataAdapter(command))
+                        {
+                            adapter.Fill(ds);
+                        }
+                        if (ds != null && ds.Tables.Count > 0)
+                        {
+                            for (int i = 0; i < ds.Tables.Count; i++)
+                            {
+                                using (MySqlCommand execCommand = new MySqlCommand(ds.Tables[i].Rows[0][0].ToString(), connect))
+                                {
+                                    execCommand.ExecuteNonQuery();
+                                }
+                            }
+
+                        }
+
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return BadRequest(ex.Message.ToString());
+                }
+            }
+
+            return Ok("Triggers created successfully.");
+        }
+
+        #endregion
+
+        #region Hema 
+
+        [HttpPost]
+        public async Task<IActionResult> Addpplapiheader([FromBody] AddpplApiHeaderRequest addpplapicsvhdr)
+        {
+            try
+            {
+
+                //Insert in  csvheader table 
+                var pplapicsvhdr = new PipelineApiHeader()
+                {
+                    api_gid = 0,//Guid.NewGuid(),
+                    pipeline_code = addpplapicsvhdr.pipeline_code,
+                    api_jsonvalue = addpplapicsvhdr.api_jsonvalue,
+                    api_key = addpplapicsvhdr.api_key,
+                    api_value = addpplapicsvhdr.api_value,
+                    remarks = addpplapicsvhdr.remarks,
+                    created_date = addpplapicsvhdr.created_date,
+                    created_by = addpplapicsvhdr.created_by,
+                    updated_date = addpplapicsvhdr.updated_date,
+                    updated_by = addpplapicsvhdr.updated_by,
+                    delete_flag = "N"
+                };
+                await dbContext.con_trn_tpplapiheader.AddAsync(pplapicsvhdr);
+                await dbContext.SaveChangesAsync();
+
+                return Ok("Record Inserted Successfully");
+            }
+
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Updatepplapiheader([FromBody] UpdatepplApiHeaderRequest updatepplapihdr)
+        {
+            var pplapiheader = await dbContext.con_trn_tpplapiheader.FindAsync(Convert.ToInt32(updatepplapihdr.api_gid));
+            try
+            {
+
+                if (pplapiheader != null)
+                {
+                    pplapiheader.pipeline_code = updatepplapihdr.pipeline_code;
+                    pplapiheader.api_jsonvalue = updatepplapihdr.api_jsonvalue;
+                    pplapiheader.api_key = updatepplapihdr.api_key;
+                    pplapiheader.api_value = updatepplapihdr.api_value;
+                    pplapiheader.remarks = updatepplapihdr.remarks;
+                    pplapiheader.updated_date = updatepplapihdr.updated_date;
+                    pplapiheader.updated_by = updatepplapihdr.updated_by;
+
+                    await dbContext.SaveChangesAsync();
+
+                    return Ok("Record Updated Successfully");
+                }
+                return NotFound("Not Found TO Update");
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+
+        [HttpGet]
+        public async Task<IActionResult> Getpplapiheader(string pipelinecode)
+        {
+
+            var pplapihdr = await dbContext.con_trn_tpplapiheader
+
+                       .Where(a => a.pipeline_code == pipelinecode && a.delete_flag == "N")
+                       .Select(a => new
+                       {
+                           api_gid = a.api_gid,
+                           pipeline_code = a.pipeline_code,
+                           api_jsonvalue = a.api_jsonvalue
+                       })
+                       .ToListAsync();
+
+            try
+            {
+                if (pplapihdr == null)
+                {
+                    return NotFound("Not Found");
+                }
+
+                return Ok(pplapihdr);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+
+        [HttpPost]
+        public async Task<IActionResult> Addapisourcefield([FromBody] AddpplSourceFieldRequest addpplcsvsrcfield)
+        {
+            try
+            {
+                // Check for duplicate sourcefield_sno
+                bool isDuplicate = await dbContext.con_trn_tpplsourcefield
+                    .AnyAsync(f => f.pipeline_code == addpplcsvsrcfield.pipeline_code &&
+                                   f.dataset_code == addpplcsvsrcfield.dataset_code &&
+                                   f.sourcefield_sno == addpplcsvsrcfield.sourcefield_sno &&
+                                   f.source_type == "API" &&
+                                   f.delete_flag == "N");
+
+                if (isDuplicate)
+                {
+                    return Ok("Duplicate serial no.");
+                }
+
+                //if (addpplcsvsrcfield.sourcefield_datatype == "DATE")
+                //{
+                //    var res = dbContext.con_trn_tpplcsvheader
+                //   .Where(p => p.pipeline_code == addpplcsvsrcfield.pipeline_code && p.delete_flag == "N")
+                //   .Select(p => new PipelineCsvHeader
+                //   {
+                //       csvfile_dateformat = p.csvfile_dateformat,
+                //   })
+                //   .SingleOrDefault();
+                //    if (res.csvfile_dateformat == "QCD_SELECT")
+                //    {
+                //        return Ok("Date Format Cannot be blank.");
+                //    }
+                //}
+                //else if (addpplcsvsrcfield.sourcefield_datatype == "DATETIME")
+                //{
+                //    var res = dbContext.con_trn_tpplcsvheader
+                //   .Where(p => p.pipeline_code == addpplcsvsrcfield.pipeline_code && p.delete_flag == "N")
+                //   .Select(p => new PipelineCsvHeader
+                //   {
+                //       csvfile_dateformat = p.csvfile_dateformat,
+                //       csvfile_datetimeformat = p.csvfile_datetimeformat,
+                //   })
+                //   .SingleOrDefault();
+
+                //    if (res.csvfile_dateformat == "QCD_SELECT" || res.csvfile_datetimeformat == "QCD_SELECT")
+                //    {
+                //        return Ok("Date/Time Format Cannot be blank.");
+                //    }
+                //}
+
+                //Insert in  csvsourcefield table 
+                var pplcsvsrchdr = new PipelineSourcefield()
+                {
+                    pplsourcefield_gid = 0,//Guid.NewGuid(),
+                    pipeline_code = addpplcsvsrcfield.pipeline_code,
+                    dataset_code = addpplcsvsrcfield.dataset_code,
+                    sourcefield_name = addpplcsvsrcfield.sourcefield_name,
+                    sourcefield_sno = addpplcsvsrcfield.sourcefield_sno,
+                    sourcefield_datatype = addpplcsvsrcfield.sourcefield_datatype,
+                    source_type = "API",
+                    created_date = addpplcsvsrcfield.created_date,
+                    created_by = addpplcsvsrcfield.created_by,
+                    updated_date = addpplcsvsrcfield.updated_date,
+                    updated_by = addpplcsvsrcfield.updated_by,
+                    delete_flag = "N"
+                };
+                await dbContext.con_trn_tpplsourcefield.AddAsync(pplcsvsrchdr);
+                await dbContext.SaveChangesAsync();
+
+                return Ok("Record Inserted Successfully");
+            }
+
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Updateapisourcefield([FromBody] UpdatepplSourceFieldRequest updatepplcsvsrcfield)
+        {
+            var pplcsvsrchdr = await dbContext.con_trn_tpplsourcefield.FindAsync(Convert.ToInt32(updatepplcsvsrcfield.pplsourcefield_gid));
+            try
+            {
+
+                if (pplcsvsrchdr != null)
+                {
+                    // Check for duplicate sourcefield_sno in other records
+                    bool isDuplicate = await dbContext.con_trn_tpplsourcefield
+                        .AnyAsync(f => f.pipeline_code == updatepplcsvsrcfield.pipeline_code &&
+                                       f.dataset_code == updatepplcsvsrcfield.dataset_code &&
+                                       f.sourcefield_sno == updatepplcsvsrcfield.sourcefield_sno &&
+                                       f.source_type == "API" &&
+                                       f.delete_flag == "N" &&
+                                       f.pplsourcefield_gid != Convert.ToInt32(updatepplcsvsrcfield.pplsourcefield_gid));
+
+                    if (isDuplicate)
+                    {
+                        return Ok("Duplicate serial no.");
+                    }
+
+                    //if (updatepplcsvsrcfield.sourcefield_datatype == "DATE")
+                    //{
+                    //    var res = dbContext.con_trn_tpplcsvheader
+                    //   .Where(p => p.pipeline_code == updatepplcsvsrcfield.pipeline_code && p.delete_flag == "N")
+                    //   .Select(p => new PipelineCsvHeader
+                    //   {
+                    //       csvfile_dateformat = p.csvfile_dateformat,
+                    //   })
+                    //   .SingleOrDefault();
+                    //    if (res.csvfile_dateformat == "QCD_SELECT")
+                    //    {
+                    //        return Ok("Date Format Cannot be blank.");
+                    //    }
+                    //}
+                    //else if (updatepplcsvsrcfield.sourcefield_datatype == "DATETIME")
+                    //{
+                    //    var res = dbContext.con_trn_tpplcsvheader
+                    //   .Where(p => p.pipeline_code == updatepplcsvsrcfield.pipeline_code && p.delete_flag == "N")
+                    //   .Select(p => new PipelineCsvHeader
+                    //   {
+                    //       csvfile_dateformat = p.csvfile_dateformat,
+                    //       csvfile_datetimeformat = p.csvfile_datetimeformat,
+                    //   })
+                    //   .SingleOrDefault();
+
+                    //    if (res.csvfile_dateformat == "QCD_SELECT" || res.csvfile_datetimeformat == "QCD_SELECT")
+                    //    {
+                    //        return Ok("Date/Time Format Cannot be blank.");
+                    //    }
+                    //}
+
+                    pplcsvsrchdr.pipeline_code = updatepplcsvsrcfield.pipeline_code;
+                    pplcsvsrchdr.dataset_code = updatepplcsvsrcfield.dataset_code;
+                    pplcsvsrchdr.sourcefield_name = updatepplcsvsrcfield.sourcefield_name;
+                    pplcsvsrchdr.sourcefield_sno = updatepplcsvsrcfield.sourcefield_sno;
+                    pplcsvsrchdr.sourcefield_datatype = updatepplcsvsrcfield.sourcefield_datatype;
+                    pplcsvsrchdr.updated_date = updatepplcsvsrcfield.updated_date;
+                    pplcsvsrchdr.updated_by = updatepplcsvsrcfield.updated_by;
+
+                    await dbContext.SaveChangesAsync();
+
+                    return Ok("Record Updated Successfully");
+                }
+                return NotFound("Not Found TO Update");
+
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetallApisourcefiledList(string pipeline_code, string dataset_code)
+        {
+            var pplsrccsv = await dbContext.con_trn_tpplsourcefield
+
+                       .Where(a => a.pipeline_code == pipeline_code && a.dataset_code == dataset_code && a.source_type == "API" && a.delete_flag == "N")
+                       .Select(a => new
+                       {
+                           pplsourcefield_gid = a.pplsourcefield_gid,
+                           pipeline_code = a.pipeline_code,
+                           dataset_code = a.dataset_code,
+                           sourcefield_name = a.sourcefield_name,
+                           sourcefield_datatype = a.sourcefield_datatype,
+                           sourcefield_sno = a.sourcefield_sno,
+                           source_type = a.source_type
+                       })
+                       .ToListAsync();
+
+            try
+            {
+                if (pplsrccsv == null)
+
+                {
+                    return NotFound("Not Found");
+                }
+                return Ok(pplsrccsv);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+
+
+
+        #endregion
+
+        #region Get Po sample
+        [HttpGet]
+        public IActionResult GetPODetails()
+        {
+            try
+            {
+                // Create a DataSet to hold both tables
+                DataSet dataSet = new DataSet();
+
+                // Create PO Master Table
+                DataTable poMaster = new DataTable("poMaster");
+                poMaster.Columns.Add("PONumber", typeof(string));
+                poMaster.Columns.Add("PODate", typeof(DateTime));
+                poMaster.Columns.Add("VendorCode", typeof(string));
+                poMaster.Columns.Add("VendorName", typeof(string));
+                poMaster.Columns.Add("PoAmount", typeof(decimal));
+                poMaster.Columns.Add("Status", typeof(string));
+                poMaster.Columns.Add("Taxcode", typeof(string));
+                poMaster.Columns.Add("DcNumber", typeof(string));
+
+                // Sample Data
+                poMaster.Rows.Add("CPO28008849", DateTime.Now.AddDays(-5), "56141", "SAHRUDAYA DEVICES", 59000.00, "Closed", "GST18", "DC1002");
+                //poMaster.Rows.Add("PO124", DateTime.Now.AddDays(-3), "V0011","Supplier B", 25000.75m, "Pending", "GST18","DC1003");
+
+                // Create PO Details Table
+                DataTable poDetails = new DataTable("PODetails");
+                poDetails.Columns.Add("POnumber", typeof(string));
+                poDetails.Columns.Add("Srvnumber", typeof(string));
+                poDetails.Columns.Add("Srvdate", typeof(DateTime));
+                poDetails.Columns.Add("Itemcode", typeof(string));
+                poDetails.Columns.Add("Dcnumber", typeof(string));
+                poDetails.Columns.Add("Vendorinvno", typeof(string));
+                poDetails.Columns.Add("Baseamount", typeof(decimal));
+                poDetails.Columns.Add("Totalamount", typeof(decimal));
+                poDetails.Columns.Add("Cgst", typeof(string));
+                poDetails.Columns.Add("Locationid", typeof(string));
+                poDetails.Columns.Add("Inserteddate", typeof(DateTime));
+
+                // Sample Data
+                poDetails.Rows.Add("CPO28008849", "CSRV28010421", DateTime.Now.AddDays(-5), "1002323", "8182", "0", 25000.00, 29500.00, "GST18", "10331", DateTime.Now);
+                poDetails.Rows.Add("CPO28008849", "CSRV28010421", DateTime.Now.AddDays(-5), "1002323", "8182", "0", 25000.00, 29500.00, "GST18", "10331", DateTime.Now);
+
+                // Add tables to DataSet
+                dataSet.Tables.Add(poMaster);
+                dataSet.Tables.Add(poDetails);
+
+                // Convert to JSON-friendly object
+                var result = new
+                {
+                    NewGenPOMaster = ConvertDataTableToList(poMaster),
+                    PODetails = ConvertDataTableToList(poDetails)
+                };
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Error retrieving data", error = ex.Message });
+            }
+        }
+        // Converts DataTable to a List of Dictionary (JSON-friendly format)
+        private static List<Dictionary<string, object>> ConvertDataTableToList(DataTable dt)
+        {
+            var list = new List<Dictionary<string, object>>();
+            foreach (DataRow row in dt.Rows)
+            {
+                var dict = new Dictionary<string, object>();
+                foreach (DataColumn col in dt.Columns)
+                {
+                    dict[col.ColumnName] = row[col];
+                }
+                list.Add(dict);
+            }
+            return list;
+        }
+        #endregion
+
+        #region DataSet DML
+        /*  [HttpGet]
+          public IActionResult GetDataSet(string pipeline_code)
+          {
+              using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+              {
+                  if (connect.State != ConnectionState.Open)
+                      connect.Open();
+                  DataTable dt = new DataTable();
+
+                  try
+                  {
+                      using (MySqlCommand command = new MySqlCommand("pr_con_get_Dataset", connect))
+                      {
+                          command.CommandType = CommandType.StoredProcedure;
+                          command.Parameters.AddWithValue("in_pipeline_code", pipeline_code);
+                          using (MySqlDataAdapter da = new MySqlDataAdapter(command))
+                          {
+                              da.Fill(dt); // Fill the DataTable with results
+
+                          }
+                      }
+
+                      // Serialize DataTable to JSON
+                      string jsonResult = JsonConvert.SerializeObject(dt, Formatting.Indented);
+                      return Ok(jsonResult);
+                  }
+                  catch (Exception ex)
+                  {
+                      return BadRequest(new { error = ex.Message });
+                  }
+              }
+          }
+
+
+          [HttpGet]
+          public IActionResult GetDataSetField(string pipeline_code,string datset_code)
+          {
+              using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+              {
+                  if (connect.State != ConnectionState.Open)
+                      connect.Open();
+                  DataSet dt = new DataSet();
+
+                  try
+                  {
+                      using (MySqlCommand command = new MySqlCommand("pr_con_get_Datasetfield", connect))
+                      {
+                          command.CommandType = CommandType.StoredProcedure;
+                          command.Parameters.AddWithValue("in_pipeline_code", pipeline_code);
+                          command.Parameters.AddWithValue("in_dataset_code", datset_code);
+                          using (MySqlDataAdapter da = new MySqlDataAdapter(command))
+                          {
+                              da.Fill(dt); // Fill the DataTable with results
+
+                          }
+                      }
+
+                      // Serialize DataTable to JSON
+                      string jsonResult = JsonConvert.SerializeObject(dt, Formatting.Indented);
+                      return Ok(jsonResult);
+                  }
+                  catch (Exception ex)
+                  {
+                      return BadRequest(new { error = ex.Message });
+                  }
+              }
+          }*/
+        #endregion
+
+        #region Fetch PipelineSourceFields
+        [HttpGet]
+        public IActionResult GetSourceFiels(string pipeline_code, string dataset_code)
+        {
+            using (MySqlConnection connect = new MySqlConnection(targetconnectionString))
+            {
+                if (connect.State != ConnectionState.Open)
+                    connect.Open();
+                DataTable dt = new DataTable();
+
+                try
+                {
+                    using (MySqlCommand command = new MySqlCommand("pr_con_get_sourcefields", connect))
+                    {
+                        command.CommandType = CommandType.StoredProcedure;
+                        command.Parameters.AddWithValue("in_pipeline_code", pipeline_code);
+                        command.Parameters.AddWithValue("in_dataset_code", dataset_code);
+                        using (MySqlDataAdapter da = new MySqlDataAdapter(command))
+                        {
+                            da.Fill(dt); // Fill the DataTable with results
+                        }
+                    }
+
+                    // Serialize DataTable to JSON
+                    string jsonResult = JsonConvert.SerializeObject(dt, Formatting.Indented);
+                    return Ok(jsonResult);
+                }
+                catch (Exception ex)
+                {
+                    return BadRequest(new { error = ex.Message });
+                }
+            }
+        }
+        #endregion
+
+        #region Connector Scheduled Record Api Call
+
+        [HttpPost]
+        public async Task<IActionResult> TGDSpath_Taskscheduler([FromBody] NewSchedulerForothers objsched)
+        {
+
+            string msg = "";
+            try
+            {
+
+                var count = await dbContext.con_mst_tpipeline
+                        .Where(a => a.pipeline_code == objsched.pipeline_code && a.delete_flag == "N" && a.pipeline_status == "Active")
+                        .CountAsync();
+
+
+                var getsch = dbContext.con_trn_tscheduler
+                        .Where(p => p.scheduler_gid == objsched.scheduler_gid
+                        && p.pipeline_code == objsched.pipeline_code
+                        && p.dataset_code == objsched.dataset_code
+                        && p.scheduler_status == "Locked" && p.delete_flag == "N")
+                        .Select(p => new Scheduler
+                        {
+                            scheduler_status = p.scheduler_status,
+                            file_path = p.file_path,
+                            file_name = p.file_name
+                        })
+                        .SingleOrDefault();
+
+                //scheduler Path Changes start 2025-06-19
+                string firstFile = Directory.GetFiles(getsch.file_path)
+                           .OrderBy(f => System.IO.File.GetCreationTime(f))
+                           .FirstOrDefault();
+                string firstFileName = Path.GetFileName(firstFile);
+
+                //Update on scheduler table (fil_path)
+                var shdlr = await dbContext.con_trn_tscheduler.FindAsync(objsched.scheduler_gid);
+
+                if (shdlr != null)
+                {
+                    shdlr.file_path = firstFile;
+                    shdlr.file_name = firstFileName;
+                    await dbContext.SaveChangesAsync();
+                }
+                //scheduler Path Changes end 2025-06-19
+                if (count > 0)
+                {
+                    if (getsch != null)
+                    {
+                        var pipelineWithConnector = await dbContext.con_mst_tpipeline
+                       .Where(p => p.pipeline_code == objsched.pipeline_code && p.delete_flag == "N")
+                       .Join(
+                           dbContext.con_mst_tconnection,
+                                       pipeline => pipeline.connection_code,
+                           connector => connector.connection_code,
+                           (pipeline, connector) => new { Pipeline = pipeline, Connector = connector }
+                       )
+                       .FirstOrDefaultAsync();
+
+                        if (pipelineWithConnector.Connector.source_db_type == "Excel")
+                        {
+                            msg = await Exceldatapush(objsched.scheduler_gid, objsched.dataset_code);
+                        }
+                        else
+                        {
+                            msg = OtherSrcdatapush(objsched.scheduler_gid);
+                        }
+                    }
+                    else
+                    {
+                        msg = "This Pipeline is already in <" + getsch.scheduler_status + "> status";
+                    }
+                }
+                else
+                {
+                    msg = "This is not a Active pipeline";
+
+                }
+            }
+            catch (Exception ex)
+            {
+                await UpdateScheduler(objsched.scheduler_gid, "Failed", "System");
+                msg = ex.Message;
+            }
+
+            return Ok(msg);
+        }
+        public object? GetNextSchedulerToRun()
+        {
+            DateTime currentDateTime = GetServerDateTime(); // Or DateTime.Now;
+
+            var scheduler = dbContext.con_trn_tscheduler
+                .Where(p => p.scheduler_status == "Scheduled"
+                            && p.pipeline_code != ""
+                            && p.dataset_code != ""
+                            && p.scheduler_start_date <= currentDateTime
+                            && p.delete_flag == "N")
+                .OrderBy(p => p.scheduler_gid)
+                .Select(c => new
+                {
+                    c.scheduler_gid,
+                    c.scheduled_date,
+                    c.pipeline_code,
+                    c.dataset_code,
+                    c.scheduler_start_date,
+                    c.scheduler_end_date,
+                    c.scheduler_status,
+                    c.scheduler_initiated_by,
+                    c.delete_flag
+                })
+                .FirstOrDefault();
+
+            return scheduler;
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> Fetchschedulerandrun()
+        {
+            try
+            {
+                // Step 1: Get the next eligible scheduler to run
+                var scheduler = GetNextSchedulerToRun();
+
+                if (scheduler == null)
+                    return NotFound("No scheduler found to run.");
+
+                int sched_gid = (int)scheduler.GetType().GetProperty("scheduler_gid").GetValue(scheduler);
+                string pipeline_code = scheduler.GetType().GetProperty("pipeline_code").GetValue(scheduler).ToString();
+                string dataset_code = scheduler.GetType().GetProperty("dataset_code").GetValue(scheduler).ToString();
+                string initiated_by = scheduler.GetType().GetProperty("scheduler_initiated_by").GetValue(scheduler).ToString();
+
+                // Step 2: Lock the scheduler
+                await UpdateScheduler(sched_gid, "Locked", "System");
+
+                // Step 3: Create the input model and call TGDS_Taskscheduler
+                var objSched = new NewSchedulerForothers
+                {
+                    scheduler_gid = sched_gid,
+                    pipeline_code = pipeline_code,
+                    dataset_code = dataset_code,
+                    initiated_by = initiated_by
+                };
+
+                var tgdsResult = await TGDSpath_Taskscheduler(objSched) as OkObjectResult;
+                string tgdsMessage = tgdsResult?.Value?.ToString();
+
+                // Step 4: Call Reschedulefornexttime
+                string rescheduleMsg = await Reschedulefornexttime(pipeline_code, dataset_code);
+
+                return Ok(new { message = "Scheduler triggered successfully.", scheduler_gid = sched_gid });
+
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Internal error: {ex.Message}");
+            }
+        }
+
+
+        public void logger(string sMessage)
+        {
+            using (StreamWriter writer = new StreamWriter(errorlogfilePath, true))
+            {
+                writer.WriteLine($"Timestamp: {DateTime.Now}");
+                writer.WriteLine($"Message: {sMessage}");
+                writer.WriteLine(new string('-', 40));
+            }
+        }
+
+        #endregion
+
+        // Pipeline PDF Generation
+        #region PDF
+        [HttpGet]
+        public IActionResult GeneratePdf(string pipeline_code, string dataset_code = "")
+        {
+            if(dataset_code != "" && dataset_code != null)
+            {
+                var pdfBytes = datasetPDFGeneration(dataset_code, pipeline_code);
+                if (pdfBytes != null)
+                {
+                    return File(pdfBytes, "application/pdf", $"{dataset_code}.pdf");
+                }
+                else
+                {
+                    return BadRequest("Unable to generate PDF.");
+                }
+            } else
+            {
+                var pdfBytes = pipelinePDFGeneration(pipeline_code);
+                if (pdfBytes != null)
+                {
+                    return File(pdfBytes, "application/pdf", $"{pipeline_code}.pdf");
+                }
+                else
+                {
+                    return BadRequest("Unable to generate PDF.");
+                }
+            }           
+        }
+
+        public byte[] datasetPDFGeneration(string dataset_code, string pipeline_code)
+        {
+            constring = _configuration.GetSection("ConnectionStrings")["Mysql"].ToString();
+            try
+            {
+                string[] alphabet = new string[] { ".1", ".2", ".3", ".4", ".5", ".6", ".7", ".8", ".9", ".10", ".11", ".12", ".13", ".14", ".15", ".16", ".17", ".18", ".19", ".20", ".21", ".22", ".23", ".24", ".25", ".26", ".27", ".28", ".29", ".30", ".31", ".32", ".33", ".34", ".35", ".36" };
+                string tab1 = "     ";
+                string tab2 = "          ";
+                float fh = 8f;
+                BaseColor mustardYellow = new BaseColor(235, 147, 22);
+                BaseColor grassGreen = new BaseColor(0, 102, 0);
+                BaseColor reconPurpple = new BaseColor(135, 46, 123);
+                BaseColor ironbrown = new BaseColor(153, 0, 0);
+                DBManager dbManager = new DBManager(constring);
+                MySqlDataAccess con = new MySqlDataAccess("");
+                MemoryStream ms = new MemoryStream();
+                Rectangle rec = new Rectangle(PageSize.A4);
+                using (Document document = new Document(rec, 30f, 30f, 30f, 30f))
+                {
+                    PdfWriter writer = PdfWriter.GetInstance(document, ms);
+                    document.Open();
+                    BaseColor borderColor = new BaseColor(169, 169, 169);
+                    // first row
+                    PdfPTable mainTable = new PdfPTable(3) { WidthPercentage = 100 };
+                    mainTable.SetWidths(new float[] { 10f, 5f, 10f });
+                            int preprocessalphabet;
+                             preprocessalphabet = 0;
+                            PdfPTable mainTable3 = new PdfPTable(3) { WidthPercentage = 100 }; // PdfPTable(3) Number of columns
+                            mainTable3.SetWidths(new float[] { 10f, 10f, 10f }); // set width for the three column
+                            parameters = new List<IDbDataParameter>();
+                            parameters.Add(dbManager.CreateParameter("in_pipeline_code", pipeline_code, DbType.String));
+                            parameters.Add(dbManager.CreateParameter("in_dataset_code", dataset_code, DbType.String));
+                            ds = dbManager.execStoredProcedure("pr_con_report_ppldatasetdetails", CommandType.StoredProcedure, parameters.ToArray());
+                            document.NewPage();
+                    string pipeline_name = ds.Tables[0].Rows[0]["Pipeline Name"].ToString();
+                    document.Add(CreateMainTitle1(pipeline_name));
+                    PdfPTable pipelineCodeTable = new PdfPTable(1);
+                    pipelineCodeTable.AddCell(CreateLabelCell("Pipeline Code : " + ds.Tables[0].Rows[0]["Pipeline Code"], true));
+                    PdfPCell piepelineCodeCell = new PdfPCell(pipelineCodeTable)
+                    {
+                        Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                        BackgroundColor = new BaseColor(230, 230, 250),
+                        BorderColor = borderColor
+                    };
+                    mainTable.AddCell(piepelineCodeCell);
+                    mainTable.AddCell(new PdfPCell(new Phrase("")) { Border = PdfPCell.NO_BORDER });
+                    // pipeline name
+                    PdfPTable pipelineNameTable = new PdfPTable(1);
+                    pipelineNameTable.AddCell(CreateLabelCell("Pipeline Name : " + ds.Tables[0].Rows[0]["Pipeline Name"], true));
+                    PdfPCell pipelineNameCell = new PdfPCell(pipelineNameTable)
+                    {
+                        Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                        BackgroundColor = new BaseColor(230, 230, 250),
+                        BorderColor = borderColor
+                    };
+                    mainTable.AddCell(pipelineNameCell);
+                    // Empty Line
+                    PdfPCell blankCell = new PdfPCell(new Phrase(" "))
+                    {
+                        Colspan = 3,
+                        FixedHeight = 8f,
+                        Border = PdfPCell.NO_BORDER
+                    };
+                    mainTable.AddCell(blankCell);
+                    // Second Row Connector
+                    PdfPTable connectorTable = new PdfPTable(1);
+                    connectorTable.AddCell(CreateLabelCell("Connector : " + ds.Tables[0].Rows[0]["Connector"], true));
+                    PdfPCell connectorCell = new PdfPCell(connectorTable)
+                    {
+                        Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                        BackgroundColor = new BaseColor(230, 230, 250),
+                        BorderColor = borderColor
+                    };
+                    mainTable.AddCell(connectorCell);
+                    // Add an empty blank space
+                    mainTable.AddCell(new PdfPCell(new Phrase("")) { Border = PdfPCell.NO_BORDER });
+                    
+                    if(ds.Tables[0].Rows[0]["Connector"].ToString() == "EXCEL Connector")
+                    {
+                        // file name
+                        PdfPTable fileNameTable = new PdfPTable(1);
+                        fileNameTable.AddCell(CreateLabelCell("File Name : " + ds.Tables[0].Rows[0]["File Name"], true));
+                        PdfPCell fileNameCell = new PdfPCell(fileNameTable)
+                        {
+                            Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                            BackgroundColor = new BaseColor(230, 230, 250),
+                            BorderColor = borderColor
+                        };
+                        mainTable.AddCell(fileNameCell);
+                        // Empty Line
+                        PdfPCell blankCell1 = new PdfPCell(new Phrase(" "))
+                        {
+                            Colspan = 3,
+                            FixedHeight = 8f,
+                            Border = PdfPCell.NO_BORDER
+                        };
+                        mainTable.AddCell(blankCell1);
+                        // sheet name
+                        PdfPTable sheetNameTable = new PdfPTable(1);
+                        sheetNameTable.AddCell(CreateLabelCell("Sheet Name : " + ds.Tables[0].Rows[0]["Sheet Name"], true));
+                        PdfPCell sheetNameCell = new PdfPCell(sheetNameTable)
+                        {
+                            Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                            BackgroundColor = new BaseColor(230, 230, 250),
+                            BorderColor = borderColor
+                        };
+                        mainTable.AddCell(sheetNameCell);
+                        mainTable.AddCell(new PdfPCell(new Phrase("")) { Border = PdfPCell.NO_BORDER });
+                    } else if (ds.Tables[0].Rows[0]["Connector"].ToString() == "My Sql")
+                    {
+                        // DB name
+                        PdfPTable dbTable = new PdfPTable(1);
+                        dbTable.AddCell(CreateLabelCell("DB Name : " + ds.Tables[0].Rows[0]["DB Name"], true));
+                        PdfPCell dbCell = new PdfPCell(dbTable)
+                        {
+                            Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                            BackgroundColor = new BaseColor(230, 230, 250),
+                            BorderColor = borderColor
+                        };
+                        mainTable.AddCell(dbCell);
+                        // Empty Line
+                        PdfPCell blankCell3 = new PdfPCell(new Phrase(" "))
+                        {
+                            Colspan = 3,
+                            FixedHeight = 8f,
+                            Border = PdfPCell.NO_BORDER
+                        };
+                        mainTable.AddCell(blankCell3);
+                        // DB Type
+                        PdfPTable dbTypeTable = new PdfPTable(1);
+                        dbTypeTable.AddCell(CreateLabelCell("DB Type : " + ds.Tables[0].Rows[0]["Type"], true));
+                        PdfPCell dbTypeCell = new PdfPCell(dbTypeTable)
+                        {
+                            Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                            BackgroundColor = new BaseColor(230, 230, 250),
+                            BorderColor = borderColor
+                        };
+                        mainTable.AddCell(dbTypeCell);
+                        // Add an empty blank space
+                        mainTable.AddCell(new PdfPCell(new Phrase("")) { Border = PdfPCell.NO_BORDER });
+                        // DB desc
+                        PdfPTable dbDescTable = new PdfPTable(1);
+                        dbDescTable.AddCell(CreateLabelCell("Description : " + ds.Tables[0].Rows[0]["TVQ Description"], true));
+                        PdfPCell dbDescCell = new PdfPCell(dbDescTable)
+                        {
+                            Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                            BackgroundColor = new BaseColor(230, 230, 250),
+                            BorderColor = borderColor
+                        };
+                        mainTable.AddCell(dbDescCell);
+                        // Empty Line
+                        PdfPCell blankCell4 = new PdfPCell(new Phrase(" "))
+                        {
+                            Colspan = 3,
+                            FixedHeight = 8f,
+                            Border = PdfPCell.NO_BORDER
+                        };
+                        mainTable.AddCell(blankCell4);
+                    }
+
+                    // pipeline status
+                    PdfPTable piplinestatusTable = new PdfPTable(1);
+                    piplinestatusTable.AddCell(CreateLabelCell("Status : " + ds.Tables[0].Rows[0]["Status"], true));
+                    PdfPCell statusCell = new PdfPCell(piplinestatusTable)
+                    {
+                        Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                        BackgroundColor = new BaseColor(230, 230, 250),
+                        BorderColor = borderColor
+                    };
+                    mainTable.AddCell(statusCell);
+                    // Empty Line
+                    PdfPCell blankCell2 = new PdfPCell(new Phrase(" "))
+                    {
+                        Colspan = 3,
+                        FixedHeight = 8f,
+                        Border = PdfPCell.NO_BORDER
+                    };
+                    mainTable.AddCell(blankCell2);
+                    document.Add(mainTable);
+                    // Dataset List
+                    if (ds.Tables[1].Rows.Count > 1)
+                    {
+                        string mainTitle = "Dataset";
+                        document.Add(CreateTitle("Dataset", mustardYellow));
+                        document.Add(PdfdynamicTableGenration(ds.Tables[1]));
+                        PdfPTable spacerTableAfter = new PdfPTable(1);
+                        PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                        {
+                            FixedHeight = fh,
+                            Border = PdfPCell.NO_BORDER
+                        };
+                        spacerTableAfter.AddCell(spacerCellAfter);
+                        document.Add(spacerTableAfter);
+                    }
+
+
+                    if (ds.Tables[2].Rows.Count > 1)
+                            {
+                                string mainTitle = "Field Mapping";
+                                document.Add(CreateTitle("Field Mapping List", mustardYellow));
+                                document.Add(PdfdynamicTableGenration(ds.Tables[2]));
+                                PdfPTable spacerTableAfter = new PdfPTable(1);
+                                PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                                {
+                                    FixedHeight = fh,
+                                    Border = PdfPCell.NO_BORDER
+                                };
+                                spacerTableAfter.AddCell(spacerCellAfter);
+                                document.Add(spacerTableAfter);
+                            }
+                            if (ds.Tables[3].Rows.Count > 1)
+                            {
+                                string mainTitle = "Filters";
+                                document.Add(CreateTitle("Filters List", mustardYellow));
+                                document.Add(PdfdynamicTableGenration(ds.Tables[3]));
+                                PdfPTable spacerTableAfter = new PdfPTable(1);
+                                PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                                {
+                                    FixedHeight = fh,
+                                    Border = PdfPCell.NO_BORDER
+                                };
+                                spacerTableAfter.AddCell(spacerCellAfter);
+                                document.Add(spacerTableAfter);
+                            }
+                            if (ds.Tables[4].Rows.Count > 1)
+                            {
+                                string mainTitle = "Validation";
+                                document.Add(CreateTitle("Validation List", mustardYellow));
+                                document.Add(PdfdynamicTableGenration(ds.Tables[4]));
+                                PdfPTable spacerTableAfter = new PdfPTable(1);
+                                PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                                {
+                                    FixedHeight = fh,
+                                    Border = PdfPCell.NO_BORDER
+                                };
+                                spacerTableAfter.AddCell(spacerCellAfter);
+                                document.Add(spacerTableAfter);
+                            }
+                            if (ds.Tables[6].Rows.Count > 1)
+                            {
+                                string mainTitle = "Conversion Rules";
+                                document.Add(CreateTitle("Conversion Rules List", mustardYellow));
+                                document.Add(PdfdynamicTableGenration(ds.Tables[6]));
+                                PdfPTable spacerTableAfter = new PdfPTable(1);
+                                PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                                {
+                                    FixedHeight = fh,
+                                    Border = PdfPCell.NO_BORDER
+                                };
+                                spacerTableAfter.AddCell(spacerCellAfter);
+                                document.Add(spacerTableAfter);
+                            }
+                            if (ds.Tables[7].Rows.Count > 1)
+                            {
+                                string mainTitle = "Finalization";
+                                document.Add(CreateTitle("Finalization List", mustardYellow));
+                                document.Add(PdfdynamicTableGenration(ds.Tables[7]));
+                                PdfPTable spacerTableAfter = new PdfPTable(1);
+                                PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                                {
+                                    FixedHeight = fh,
+                                    Border = PdfPCell.NO_BORDER
+                                };
+                                spacerTableAfter.AddCell(spacerCellAfter);
+                                document.Add(spacerTableAfter);
+                            }
+
+                    document.Close();
+                }
+                return ms.ToArray();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error", ex.Message);
+                return null;
+            }
+        }
+        public byte[] pipelinePDFGeneration(string pipeline_code)
+        {
+            constring = _configuration.GetSection("ConnectionStrings")["Mysql"].ToString();
+            try
+            {
+                string[] alphabet = new string[] { ".1", ".2", ".3", ".4", ".5", ".6", ".7", ".8", ".9", ".10", ".11", ".12", ".13", ".14", ".15", ".16", ".17", ".18", ".19", ".20", ".21", ".22", ".23", ".24", ".25", ".26", ".27", ".28", ".29", ".30", ".31", ".32", ".33", ".34", ".35", ".36" };
+                string tab1 = "     ";
+                string tab2 = "          ";
+                float fh = 8f;
+                BaseColor mustardYellow = new BaseColor(235, 147, 22);
+                BaseColor grassGreen = new BaseColor(0, 102, 0);
+                BaseColor reconPurpple = new BaseColor(135, 46, 123);
+                BaseColor ironbrown = new BaseColor(153, 0, 0);
+                DBManager dbManager = new DBManager(constring);
+                MySqlDataAccess con = new MySqlDataAccess("");
+                parameters = new List<IDbDataParameter>();
+                parameters.Add(dbManager.CreateParameter("in_pipeline_code", pipeline_code, DbType.String));
+                ds = dbManager.execStoredProcedure("pr_con_report_pipelinedetails", CommandType.StoredProcedure, parameters.ToArray());
+                if (ds.Tables.Count > 0)
+                {
+                    ds.Tables[0].TableName = "pipelineheader";
+                    ds.Tables[1].TableName = "datasetlist";
+                }
+                MemoryStream ms = new MemoryStream();
+                Rectangle rec = new Rectangle(PageSize.A4);
+                using (Document document = new Document(rec, 30f, 30f, 30f, 30f))
+                {
+                    // Dynamic Table data
+                    DataTable dt1 = new DataTable();
+                    DataTable dt2 = new DataTable();
+                    dt1 = ds.Tables["pipelineheader"];
+                    dt2 = ds.Tables["datasetlist"];
+                    PdfWriter writer = PdfWriter.GetInstance(document, ms);
+                    document.Open();
+                    BaseColor borderColor = new BaseColor(169, 169, 169);
+                    // first row
+                    PdfPTable mainTable = new PdfPTable(3) { WidthPercentage = 100 };
+                    mainTable.SetWidths(new float[] { 10f, 5f, 10f });
+                    string pipeline_name = dt1.Rows[0]["Pipeline Name"].ToString();
+                    document.Add(CreateMainTitle1(pipeline_name));                    
+                    PdfPTable pipelineCodeTable = new PdfPTable(1);
+                    pipelineCodeTable.AddCell(CreateLabelCell("Pipeline Code : " + dt1.Rows[0]["Pipeline Code"], true));
+                    PdfPCell piepelineCodeCell = new PdfPCell(pipelineCodeTable)
+                    {
+                        Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                        BackgroundColor = new BaseColor(230, 230, 250),
+                        BorderColor = borderColor
+                    };
+                    mainTable.AddCell(piepelineCodeCell);
+                    mainTable.AddCell(new PdfPCell(new Phrase("")) { Border = PdfPCell.NO_BORDER });
+                    // pipeline name
+                    PdfPTable pipelineNameTable = new PdfPTable(1);
+                    pipelineNameTable.AddCell(CreateLabelCell("Pipeline Name : " + dt1.Rows[0]["Pipeline Name"], true));
+                    PdfPCell pipelineNameCell = new PdfPCell(pipelineNameTable)
+                    {
+                        Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                        BackgroundColor = new BaseColor(230, 230, 250),
+                        BorderColor = borderColor
+                    };
+                    mainTable.AddCell(pipelineNameCell);
+                    // Empty Line
+                    PdfPCell blankCell = new PdfPCell(new Phrase(" "))
+                    {
+                        Colspan = 3,
+                        FixedHeight = 8f, 
+                        Border = PdfPCell.NO_BORDER
+                    };
+                    mainTable.AddCell(blankCell);
+                    // Second Row
+                    PdfPTable connectorTable = new PdfPTable(1);
+                    connectorTable.AddCell(CreateLabelCell("Connector : " + dt1.Rows[0]["Connector"], true));
+                    PdfPCell connectorCell = new PdfPCell(connectorTable)
+                    {
+                        Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                        BackgroundColor = new BaseColor(230, 230, 250),
+                        BorderColor = borderColor
+                    };
+                    mainTable.AddCell(connectorCell);
+                    // Add an empty blank space
+                    mainTable.AddCell(new PdfPCell(new Phrase("")) { Border = PdfPCell.NO_BORDER });
+                    // file name
+                    PdfPTable fileNameTable = new PdfPTable(1);
+                    fileNameTable.AddCell(CreateLabelCell("File Name : " + dt1.Rows[0]["File Name"], true));
+                    PdfPCell fileNameCell = new PdfPCell(fileNameTable)
+                    {
+                        Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                        BackgroundColor = new BaseColor(230, 230, 250),
+                        BorderColor = borderColor
+                    };
+                    mainTable.AddCell(fileNameCell);
+                    // Empty Line
+                    PdfPCell blankCell1 = new PdfPCell(new Phrase(" "))
+                    {
+                        Colspan = 3,
+                        FixedHeight = 8f,
+                        Border = PdfPCell.NO_BORDER
+                    };
+                    mainTable.AddCell(blankCell1);
+                    // sheet name
+                    PdfPTable sheetNameTable = new PdfPTable(1);
+                    sheetNameTable.AddCell(CreateLabelCell("Sheet Name : " + dt1.Rows[0]["Sheet Name"], true));
+                    PdfPCell sheetNameCell = new PdfPCell(sheetNameTable)
+                    {
+                        Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                        BackgroundColor = new BaseColor(230, 230, 250),
+                        BorderColor = borderColor
+                    };
+                    mainTable.AddCell(sheetNameCell);
+                    mainTable.AddCell(new PdfPCell(new Phrase("")) { Border = PdfPCell.NO_BORDER });
+                    // pipeline status
+                    PdfPTable piplinestatusTable = new PdfPTable(1);
+                    piplinestatusTable.AddCell(CreateLabelCell("Status : " + dt1.Rows[0]["Status"], true));
+                    PdfPCell statusCell = new PdfPCell(piplinestatusTable)
+                    {
+                        Border = PdfPCell.BOTTOM_BORDER | PdfPCell.TOP_BORDER | PdfPCell.LEFT_BORDER | PdfPCell.RIGHT_BORDER,
+                        BackgroundColor = new BaseColor(230, 230, 250),
+                        BorderColor = borderColor
+                    };
+                    mainTable.AddCell(statusCell);
+                    // Empty Line
+                    PdfPCell blankCell2 = new PdfPCell(new Phrase(" "))
+                    {
+                        Colspan = 3,
+                        FixedHeight = 8f,
+                        Border = PdfPCell.NO_BORDER
+                    };
+                    mainTable.AddCell(blankCell2);
+                    document.Add(mainTable);
+                    // Dataset List
+                    if (dt2.Rows.Count > 1)
+                    {
+                        string mainTitle = "Dataset List";
+                        document.Add(CreateTitle("Dataset List", mustardYellow));
+                        document.Add(PdfdynamicTableGenration(dt2));
+                        PdfPTable spacerTableAfter = new PdfPTable(1);
+                        PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                        {
+                            FixedHeight = fh,
+                            Border = PdfPCell.NO_BORDER
+                        };
+                        spacerTableAfter.AddCell(spacerCellAfter);
+                        document.Add(spacerTableAfter);
+                    }
+
+                    // Dataset Field Mapping
+                    
+                    if (dt2.Rows.Count > 1)
+                    {
+                        int preprocessalphabet;
+                        string DatasetTitle = "Dataset Details";
+                        
+                        for (int i = 1; i < dt2.Rows.Count; i++)
+                        {
+                            preprocessalphabet = 0;
+                            PdfPTable mainTable3 = new PdfPTable(3) { WidthPercentage = 100 }; // PdfPTable(3) Number of columns
+                            mainTable3.SetWidths(new float[] { 10f, 10f, 10f }); // set width for the three column
+                            parameters = new List<IDbDataParameter>();
+                            parameters.Add(dbManager.CreateParameter("in_pipeline_code", Convert.ToString(pipeline_code), DbType.String));
+                            parameters.Add(dbManager.CreateParameter("in_dataset_code", Convert.ToString(dt2.Rows[i]["Dataset Code"]), DbType.String));
+                            ds = dbManager.execStoredProcedure("pr_con_report_ppldatasetdetails", CommandType.StoredProcedure, parameters.ToArray());
+                            document.NewPage();
+                            document.Add(CreateTitle(i + ". " + "Field Mapping for " + " - " + dt2.Rows[i]["Dataset Name"], ironbrown));
+                            if (ds.Tables[2].Rows.Count > 1)
+                            {
+                                string mainTitle = "Field Mapping";
+                                document.Add(CreateTitle("Field Mapping List", mustardYellow));
+                                document.Add(PdfdynamicTableGenration(ds.Tables[2]));
+                                PdfPTable spacerTableAfter = new PdfPTable(1);
+                                PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                                {
+                                    FixedHeight = fh,
+                                    Border = PdfPCell.NO_BORDER
+                                };
+                                spacerTableAfter.AddCell(spacerCellAfter);
+                                document.Add(spacerTableAfter);
+                            }
+                            if (ds.Tables[3].Rows.Count > 1)
+                            {
+                                string mainTitle = "Filters";
+                                document.Add(CreateTitle("Filters List", mustardYellow));
+                                document.Add(PdfdynamicTableGenration(ds.Tables[3]));
+                                PdfPTable spacerTableAfter = new PdfPTable(1);
+                                PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                                {
+                                    FixedHeight = fh,
+                                    Border = PdfPCell.NO_BORDER
+                                };
+                                spacerTableAfter.AddCell(spacerCellAfter);
+                                document.Add(spacerTableAfter);
+                            }
+                            if (ds.Tables[4].Rows.Count > 1)
+                            {
+                                string mainTitle = "Validation";
+                                document.Add(CreateTitle("Validation List", mustardYellow));
+                                document.Add(PdfdynamicTableGenration(ds.Tables[4]));
+                                PdfPTable spacerTableAfter = new PdfPTable(1);
+                                PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                                {
+                                    FixedHeight = fh,
+                                    Border = PdfPCell.NO_BORDER
+                                };
+                                spacerTableAfter.AddCell(spacerCellAfter);
+                                document.Add(spacerTableAfter);
+                            }
+                            if (ds.Tables[6].Rows.Count > 1)
+                            {
+                                string mainTitle = "Conversion Rules";
+                                document.Add(CreateTitle("Conversion Rules List", mustardYellow));
+                                document.Add(PdfdynamicTableGenration(ds.Tables[6]));
+                                PdfPTable spacerTableAfter = new PdfPTable(1);
+                                PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                                {
+                                    FixedHeight = fh,
+                                    Border = PdfPCell.NO_BORDER
+                                };
+                                spacerTableAfter.AddCell(spacerCellAfter);
+                                document.Add(spacerTableAfter);
+                            }
+                            if (ds.Tables[7].Rows.Count > 1)
+                            {
+                                string mainTitle = "Finalization";
+                                document.Add(CreateTitle("Finalization List", mustardYellow));
+                                document.Add(PdfdynamicTableGenration(ds.Tables[7]));
+                                PdfPTable spacerTableAfter = new PdfPTable(1);
+                                PdfPCell spacerCellAfter = new PdfPCell(new Phrase(" "))
+                                {
+                                    FixedHeight = fh,
+                                    Border = PdfPCell.NO_BORDER
+                                };
+                                spacerTableAfter.AddCell(spacerCellAfter);
+                                document.Add(spacerTableAfter);
+                            }
+                        }
+                        
+                        }
+
+                        document.Close();
+                }
+                return ms.ToArray();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error", ex.Message);
+                return null;
+            }
+        }
+        private byte[] GenerateTocPdf(List<TOCEntry> tocEntries)
+        {
+            using (MemoryStream tocStream = new MemoryStream())
+            {
+                using (Document tocDocument = new Document(PageSize.A4, 30f, 30f, 30f, 30f))
+                {
+                    PdfWriter tocWriter = PdfWriter.GetInstance(tocDocument, tocStream);
+                    tocDocument.Open();
+                    tocDocument.Add(CreateMainTitle1("Table of Content"));
+
+                    PdfPTable tocTable = new PdfPTable(2);
+                    tocTable.WidthPercentage = 100;
+                    tocTable.SetWidths(new float[] { 90f, 10f });
+
+                    foreach (var entry in tocEntries)
+                    {
+                        if (entry.Title is string)
+                        {
+                            if (entry.Title == "Content")
+                            {
+                                PdfPCell pageCell = new PdfPCell(new Phrase(entry.Title.ToString(), new Font(Font.FontFamily.HELVETICA, 12, Font.BOLD, BaseColor.BLACK)));
+                                pageCell.Border = PdfPCell.BOX;
+                                pageCell.HorizontalAlignment = Element.ALIGN_CENTER;
+                                tocTable.AddCell(pageCell);
+                            }
+                            else
+                            {
+                                PdfPCell titleCell = new PdfPCell(new Phrase(entry.Title, new Font(Font.FontFamily.HELVETICA, 10, Font.NORMAL, BaseColor.BLACK)));
+                                titleCell.Border = PdfPCell.BOX;
+                                tocTable.AddCell(titleCell);
+                            }
+                        }
+                        if (entry.PageInfo is string)
+                        {
+                            if (entry.PageInfo == "Page")
+                            {
+                                PdfPCell pageCell = new PdfPCell(new Phrase(entry.PageInfo.ToString(), new Font(Font.FontFamily.HELVETICA, 11, Font.BOLD, BaseColor.BLACK)));
+                                pageCell.Border = PdfPCell.BOX;
+                                pageCell.HorizontalAlignment = Element.ALIGN_CENTER;
+                                tocTable.AddCell(pageCell);
+                            }
+                            else
+                            {
+                                PdfPCell pageCell = new PdfPCell(new Phrase(entry.PageInfo.ToString(), new Font(Font.FontFamily.HELVETICA, 10, Font.NORMAL, BaseColor.BLACK)));
+                                pageCell.Border = PdfPCell.BOX;
+                                pageCell.HorizontalAlignment = Element.ALIGN_LEFT;
+                                tocTable.AddCell(pageCell);
+                            }
+
+                        }
+                        else
+                        {
+                            PdfPCell pageCell = new PdfPCell(new Phrase(entry.PageInfo.ToString(), new Font(Font.FontFamily.HELVETICA, 10, Font.NORMAL, BaseColor.BLACK)));
+                            pageCell.Border = PdfPCell.BOX;
+                            pageCell.HorizontalAlignment = Element.ALIGN_RIGHT;
+                            tocTable.AddCell(pageCell);
+                        }
+
+                    }
+
+                    tocDocument.Add(tocTable);
+
+                    tocDocument.Close();
+                }
+                return tocStream.ToArray();
+            }
+        }
+        public class TOCEntry
+        {
+            public string Title { get; set; }
+            public object PageInfo { get; set; }
+            public TOCEntry(string title, object pageInfo)
+            {
+                Title = title;
+                PageInfo = pageInfo;
+            }
+        }
+        private PdfPTable PdfdynamicTableGenration(DataTable dt)
+        {
+            PdfPTable table = new PdfPTable(dt.Columns.Count) { WidthPercentage = 100 };
+            BaseColor borderColor = new BaseColor(217, 222, 227);
+            float[] columnWidths = new float[dt.Columns.Count];
+            for (int i = 0; i < dt.Columns.Count; i++)
+            {
+                string colName = dt.Columns[i].ColumnName;
+                if (colName == "index_order")
+                {
+                    continue;
+                }
+                string widthValue = dt.Rows[0][i].ToString().Trim();
+                if (widthValue.EndsWith("f", StringComparison.OrdinalIgnoreCase))
+                {
+                    string numericPart = widthValue.Substring(0, widthValue.Length - 1);
+                    if (float.TryParse(numericPart, NumberStyles.Any, CultureInfo.InvariantCulture, out float parsedWidth))
+                    {
+                        if (parsedWidth == 0)
+                        {
+                            columnWidths[i] = 10f;
+                        }
+                        else
+                        {
+                            columnWidths[i] = parsedWidth;
+                        }
+                    }
+                    else
+                    {
+                        columnWidths[i] = 50f;
+                    }
+
+                }
+                else
+                {
+                    if (float.TryParse(widthValue, NumberStyles.Any, CultureInfo.InvariantCulture, out float parsedWidth))
+                    {
+                        if (parsedWidth == 0)
+                        {
+                            columnWidths[i] = 10f;
+                        }
+                        else
+                        {
+                            columnWidths[i] = parsedWidth;
+                        }
+                    }
+                    else
+                    {
+                        columnWidths[i] = 50f;
+                    }
+                }
+                string columnName = dt.Columns[i].ColumnName;
+                
+                if (columnName != "index_order")
+                {
+                    Font headerFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 8, BaseColor.WHITE);
+                    table.AddCell(CreateHeaderCell(columnName, headerFont, new BaseColor(70, 130, 180)));
+                }
+            }
+            table.SetWidths(columnWidths);
+            foreach (DataRow row in dt.Rows.Cast<DataRow>().Skip(1))
+            {
+                foreach (DataColumn column in dt.Columns)
+                {
+                    Font dataFont = FontFactory.GetFont(FontFactory.HELVETICA, 8, BaseColor.BLACK);
+
+                    PdfPCell cell = new PdfPCell(new Phrase(row[column].ToString(), dataFont))
+                    {
+                        BorderColor = borderColor
+                    };
+                    if (column.DataType == typeof(string))
+                    {
+                        cell.HorizontalAlignment = Element.ALIGN_LEFT;
+                    }
+                    else if (column.DataType == typeof(int) || column.DataType == typeof(float) || column.DataType == typeof(double) || column.DataType == typeof(decimal))
+                    {
+                        cell.HorizontalAlignment = Element.ALIGN_RIGHT;
+                    }
+                    cell.VerticalAlignment = Element.ALIGN_MIDDLE;
+                    table.AddCell(cell);
+                }
+            }
+            return table;
+        }
+        private PdfPCell CreateLabelCell(string labelText, bool isRequired)
+        {
+            Font font = new Font(Font.FontFamily.HELVETICA, 8f, Font.NORMAL);
+            Chunk labelChunk = new Chunk(labelText, font);
+            Phrase labelPhrase = new Phrase(labelChunk);
+            PdfPCell labelCell = new PdfPCell(labelPhrase)
+            {
+                Border = PdfPCell.NO_BORDER,
+            };
+            return labelCell;
+        }
+        private PdfPCell CreateHeaderCell(string text, Font font, BaseColor backgroundColor)
+        {
+            PdfPCell headerCell = new PdfPCell(new Phrase(text, font))
+            {
+                BackgroundColor = backgroundColor,
+                HorizontalAlignment = Element.ALIGN_CENTER,
+                VerticalAlignment = Element.ALIGN_MIDDLE,
+                Padding = 5,
+                BorderColor = new BaseColor(217, 222, 227)
+            };
+            return headerCell;
+        }
+        private Paragraph CreateMainTitle1(string title)
+        {
+            iTextSharp.text.Font boldFont = new iTextSharp.text.Font();
+            boldFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 10); //, iTextSharp.text.Font.BOLD);
+            Paragraph prgHeading = new Paragraph();
+            prgHeading.Alignment = Element.ALIGN_CENTER;
+            Chunk headingChunk = new Chunk(title.ToUpper(), boldFont);
+            headingChunk.SetUnderline(0.5f, -1.5f);
+            prgHeading.Add(headingChunk);
+            Paragraph spaceAfter = new Paragraph(" ", boldFont);
+            spaceAfter.SpacingBefore = 4f;
+            prgHeading.Add(spaceAfter);
+            return prgHeading;
+        }
+        private Paragraph CreateTitle(string title, BaseColor dynamicColor)
+        {
+            iTextSharp.text.Font boldFont = FontFactory.GetFont(FontFactory.HELVETICA, 10, iTextSharp.text.Font.BOLD, BaseColor.WHITE);
+            Paragraph prgHeading = new Paragraph("", boldFont)
+            {
+                Alignment = Element.ALIGN_LEFT,
+                SpacingAfter = 6f
+            };
+
+            string camelCaseTitle = ToInitialCaps(title);
+            Chunk headingChunk = new Chunk(camelCaseTitle, boldFont);
+            PdfPCell cell = new PdfPCell(new Phrase(headingChunk));
+            cell.BackgroundColor = dynamicColor;
+            cell.Border = Rectangle.NO_BORDER;
+            cell.PaddingBottom = 3;
+            cell.Bottom = 4;
+
+            PdfPTable table = new PdfPTable(1);
+            table.WidthPercentage = 100;
+            table.AddCell(cell);
+            prgHeading.Add(table);
+            return prgHeading;
+        }
+        public static string ToInitialCaps(string title)
+        {
+            if (string.IsNullOrEmpty(title))
+            {
+                return title;
+            }
+
+            TextInfo textInfo = CultureInfo.InvariantCulture.TextInfo;
+            return textInfo.ToTitleCase(title.ToLowerInvariant());
+        }
+        #endregion
+
+
+        //---------------------Pandiaraj support doc add 25-08-2025-------------------------//
+        #region DML for Supporting Document
+
+        //---------------------Pandiaraj support doc add 25-08-2025-------------------------//
+        [HttpPost]
+        public IActionResult supportingDoc([FromBody] List<SupportingDoc> supportingdocList)
+        {
+            try
+            {
+                string constring = _configuration.GetConnectionString("Mysql");
+                headerValue header_value = new headerValue();
+
+                string user_code = Request.Headers.TryGetValue("user_code", out var userCode) ? userCode.First() : "";
+                string lang_code = Request.Headers.TryGetValue("lang_code", out var langCode) ? langCode.First() : "";
+                string role_code = Request.Headers.TryGetValue("role_code", out var roleCode) ? roleCode.First() : "";
+
+                header_value.user_code = user_code;
+                header_value.lang_code = lang_code;
+                header_value.role_code = role_code;
+                //DataTable response = objDS.getSupportingDoclist(supportingdocList, header_value, constring); // assumes you updated this method
+                var result = objDS.getSupportingDoclist(supportingdocList, header_value, constring);
+                var json = JsonConvert.SerializeObject(result);
+                return Ok(json);
+            }
+            catch (Exception ex)
+            {
+                return Problem(title: ex.Message);
+            }
+        }
+
+
+        [HttpGet]
+        public IActionResult GetSupportDocs([FromQuery] string pipeline_code)
+        {
+            DataTable Resultdt = new DataTable();
+            var constring = _configuration.GetConnectionString("Mysql");
+
+            Resultdt = objDS.FetchSupportDoclist(pipeline_code, constring);
+            var results = JsonConvert.SerializeObject(Resultdt, Formatting.Indented);
+            return Ok(results);
+        }
+
+        [HttpPost]
+        public IActionResult deleteSupportDocs([FromBody] int id)
+        {
+            DataTable Resultdt = new DataTable();
+            try
+            {
+                if (id != null)
+                {
+                    //dbContext.Remove(pplfieldmap);
+                    //await dbContext.SaveChangesAsync();
+                    var constring = _configuration.GetConnectionString("Mysql");
+                    Resultdt = objDS.deleteSupportDocs(id, constring);
+                    var results = JsonConvert.SerializeObject(Resultdt, Formatting.Indented);
+                    return Ok(results);
+                }
+
+                return NotFound("Not Found To Delete");
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error: {ex.Message}");
+            }
+        }
+        #endregion
+        //---------------------Pandiaraj support doc add 25-08-2025-------------------------//
+
+    }
+}
