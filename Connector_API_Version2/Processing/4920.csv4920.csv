@@ -1,0 +1,3 @@
+corp_address`~*`delivery_address`~*`price`~*`qty`~*`tax`~*`product`~*`invoicedate`~*`invoiceno
+{}`~*`{   "address": "115, mount road",   "city": "chennai" }`~*`500`~*`10`~*`100`~*`mouse`~*`06-10-2025`~*`invoiceno1
+{}`~*`{   "address": "115, mount road",   "city": "chennai" }`~*`1000`~*`20`~*`0`~*`webcam`~*`06-10-2025`~*`invoiceno1
