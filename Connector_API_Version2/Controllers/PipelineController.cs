@@ -7056,6 +7056,9 @@ namespace MysqlEfCoreDemo.Controllers
 
                         await dbContext.SaveChangesAsync();
 
+                        // Step 2: Lock the scheduler
+                        await UpdateScheduler(lastInsertedId, "Locked", "System");
+
                         msg = OtherSrcdatapush(lastInsertedId);
 
                     }
@@ -7113,7 +7116,7 @@ namespace MysqlEfCoreDemo.Controllers
                         return "Fieldmapping is not done for this pipeline...";
                     }
                     //Get dataset 
-                    dataSet = OtherSrcToDataSet(schldpplcode.pipeline_code);
+                    dataSet = OtherSrcToDataSet(schldpplcode.pipeline_code, schldpplcode.dataset_code);
 
                     int dtrow_count = dataTable.Rows.Count;
                     //int matched_count = 0;
